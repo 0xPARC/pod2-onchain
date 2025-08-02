@@ -11,7 +11,7 @@ use plonky2::{
         circuit_builder::CircuitBuilder,
         circuit_data::{
             CircuitConfig, CircuitData, CommonCircuitData, VerifierCircuitData,
-            VerifierCircuitTarget,
+            VerifierCircuitTarget, VerifierOnlyCircuitData,
         },
         proof::{Proof, ProofWithPublicInputs},
     },
@@ -22,7 +22,9 @@ use pod2::backends::plonky2::basetypes::{C, D, F};
 use crate::poseidon_bn128::config::PoseidonBN128GoldilocksConfig;
 
 pub fn wrap_bn128(
-    inner_circuit_data: &VerifierCircuitData<F, C, D>,
+    // inner_circuit_data: &VerifierCircuitData<F, C, D>,
+    verifier_only_data: VerifierOnlyCircuitData<C, D>,
+    common_circuit_data: CommonCircuitData<F, D>,
     proof_with_public_inputs: ProofWithPublicInputs<F, C, D>,
 ) -> Result<(
     VerifierCircuitData<F, PoseidonBN128GoldilocksConfig, D>,
@@ -36,12 +38,12 @@ pub fn wrap_bn128(
         CircuitBuilder::new(config);
 
     // create circuit logic
-    let proof_with_pis_target = builder.add_virtual_proof_with_pis(&inner_circuit_data.common);
-    let verifier_circuit_target = builder.constant_verifier_data(&inner_circuit_data.verifier_only);
+    let proof_with_pis_target = builder.add_virtual_proof_with_pis(&common_circuit_data);
+    let verifier_circuit_target = builder.constant_verifier_data(&verifier_only_data);
     builder.verify_proof::<C>(
         &proof_with_pis_target,
         &verifier_circuit_target,
-        &inner_circuit_data.common,
+        &common_circuit_data,
     );
 
     builder.register_public_inputs(&proof_with_pis_target.public_inputs);
@@ -50,7 +52,7 @@ pub fn wrap_bn128(
 
     // set targets
     let mut pw = PartialWitness::new();
-    pw.set_verifier_data_target(&verifier_circuit_target, &inner_circuit_data.verifier_only)?;
+    pw.set_verifier_data_target(&verifier_circuit_target, &verifier_only_data)?;
     pw.set_proof_with_pis_target(&proof_with_pis_target, &proof_with_public_inputs)?;
 
     let vd = circuit_data.verifier_data();

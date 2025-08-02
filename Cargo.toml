@@ -12,10 +12,9 @@ serde_json = "1.0.141"
 clap = { version = "4.0", features = ["derive"] }
 
 # uses custom plonky2 & pod2 branches:
-# - plonky2: adds HashOut serialization to decimal string representation
-# 	     (instead of 4 u64 limbs representation)
+# - plonky2: without PR#1678
 # - pod2: version without EC related extra custom gates
-plonky2 = { git = "https://github.com/0xPARC/plonky2", branch="gnark-compat" }
+plonky2 = { git = "https://github.com/0xPARC/plonky2", branch="gnark-compat2" }
 pod2 = { git="https://github.com/0xPARC/pod2", branch="tmp_disable_extra_customgates" }
 
 # dependencies for the wrapper

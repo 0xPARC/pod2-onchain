@@ -14,7 +14,8 @@ use std::time::Instant;
 
 use pod2::backends::plonky2::basetypes::{C, D, F};
 
-use crate::{encapsulate_proof, store_files};
+// use crate::{encapsulate_proof, store_files};
+use crate::store_files;
 
 use crate::poseidon_bn128::config::PoseidonBN128GoldilocksConfig;
 
@@ -31,8 +32,11 @@ pub(crate) fn prove_simple_proof() -> Result<(), Box<dyn std::error::Error>> {
     // generate new plonky2 proof
     let start = Instant::now();
     let (verifier_data, common_circuit_data, proof_with_pis) = crate::wrap::wrap_bn128(
-        &base_verifier_data,
-        // base_common_circuit_data,
+        // &base_verifier_data,
+        // // base_common_circuit_data,
+        // base_proof_with_pis,
+        base_verifier_data.verifier_only,
+        base_common_circuit_data,
         base_proof_with_pis,
     )?;
     // let (verifier_data, common_circuit_data, proof_with_pis) = encapsulate_proof(
@@ -47,7 +51,11 @@ pub(crate) fn prove_simple_proof() -> Result<(), Box<dyn std::error::Error>> {
 
     // ---------------
     // store the files
-    store_files(verifier_data, common_circuit_data, proof_with_pis)?;
+    store_files(
+        verifier_data.verifier_only,
+        common_circuit_data,
+        proof_with_pis,
+    )?;
 
     Ok(())
 }

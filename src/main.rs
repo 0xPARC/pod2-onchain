@@ -98,11 +98,16 @@ fn prove_pod() -> Result<(), Box<dyn std::error::Error>> {
     // -------------------------------------------
     // generate new plonky2 proof from POD's proof
     let start = Instant::now();
-    let (verifier_data, common_circuit_data, proof_with_pis) = encapsulate_proof(
+    let (verifier_data, common_circuit_data, proof_with_pis) = crate::wrap::wrap_bn128(
         pod_verifier_data,
         pod_common_circuit_data,
         pod_proof_with_pis,
     )?;
+    // let (verifier_data, common_circuit_data, proof_with_pis) = encapsulate_proof(
+    //     pod_verifier_data,
+    //     pod_common_circuit_data,
+    //     pod_proof_with_pis,
+    // )?;
     println!("[TIME] encapsulation proof took: {:?}", start.elapsed());
 
     // sanity check: verify proof
@@ -111,15 +116,16 @@ fn prove_pod() -> Result<(), Box<dyn std::error::Error>> {
     // ---------------
     // store the files
     // TODO
-    // store_files(
-    //     verifier_data.verifier_only,
-    //     common_circuit_data,
-    //     proof_with_pis,
-    // )?;
+    store_files(
+        verifier_data.verifier_only,
+        common_circuit_data,
+        proof_with_pis,
+    )?;
 
     Ok(())
 }
 
+/*
 /// encapsulates the POD's plonky2 proof into a new plonky2 proof
 fn encapsulate_proof(
     verifier_data: VerifierOnlyCircuitData<C, D>,
@@ -160,6 +166,7 @@ fn encapsulate_proof(
 
     Ok((vd, cd, proof))
 }
+*/
 
 fn compute_pod_proof() -> Result<pod2::frontend::MainPod, Box<dyn std::error::Error>> {
     let params = Params {
@@ -185,7 +192,8 @@ fn compute_pod_proof() -> Result<pod2::frontend::MainPod, Box<dyn std::error::Er
 }
 
 fn store_files(
-    verifier_only_data: VerifierCircuitData<F, PoseidonBN128GoldilocksConfig, D>,
+    // verifier_data: VerifierCircuitData<F, PoseidonBN128GoldilocksConfig, D>,
+    verifier_only_data: VerifierOnlyCircuitData<PoseidonBN128GoldilocksConfig, D>,
     common_circuit_data: CircuitData<F, PoseidonBN128GoldilocksConfig, D>,
     proof_with_pis: ProofWithPublicInputs<F, PoseidonBN128GoldilocksConfig, D>,
     // verifier_only_data: VerifierOnlyCircuitData,
@@ -195,7 +203,8 @@ fn store_files(
     // create directory
     fs::create_dir_all("testdata/pod")?;
 
-    let json = serde_json::to_string_pretty(&verifier_only_data.verifier_only)?;
+    // let json = serde_json::to_string_pretty(&verifier_data.verifier_only)?;
+    let json = serde_json::to_string_pretty(&verifier_only_data)?;
     let mut file = fs::File::create(&"testdata/pod/verifier_only_circuit_data.json")?;
     file.write_all(&json.into_bytes())?;
 

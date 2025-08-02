@@ -25,4 +25,4 @@ require (
 	golang.org/x/sys v0.33.0 // indirect
 )
 
-// replace github.com/succinctlabs/gnark-plonky2-verifier => ../gnark-plonky2-verifier_FORK
+replace github.com/succinctlabs/gnark-plonky2-verifier => github.com/arnaucube/gnark-plonky2-verifier v0.0.0-20250802191303-f1eeded9a77f
