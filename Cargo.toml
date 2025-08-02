@@ -15,8 +15,17 @@ clap = { version = "4.0", features = ["derive"] }
 # - plonky2: adds HashOut serialization to decimal string representation
 # 	     (instead of 4 u64 limbs representation)
 # - pod2: version without EC related extra custom gates
-plonky2 = { git = "https://github.com/0xPARC/plonky2", branch="hashout_serialize_string" }
+plonky2 = { git = "https://github.com/0xPARC/plonky2", branch="gnark-compat" }
 pod2 = { git="https://github.com/0xPARC/pod2", branch="tmp_disable_extra_customgates" }
+
+# dependencies for the wrapper
+ff = { package = "ff", version = "0.13", features = ["derive"] }
+num = { version = "0.4", default-features = false }
+num-bigint = { version = "0.4", features = ["rand"] }
+lazy_static = "1.4.0"
+
+# [patch."https://github.com/0xPARC/plonky2"]
+# plonky2 = { path = "../plonky2/plonky2"}
 
 
 [features]

@@ -2,30 +2,40 @@
 
 use clap::Parser;
 use itertools::Itertools;
-use plonky2::{
-    iop::witness::{PartialWitness, WitnessWrite},
-    plonk::{circuit_builder::CircuitBuilder, circuit_data::CircuitConfig},
-};
 use std::fs;
 use std::io::Write;
 use std::ops::Deref;
 use std::time::Instant;
 
+use plonky2::{
+    field::types::Field,
+    iop::witness::{PartialWitness, WitnessWrite},
+    plonk::{
+        circuit_builder::CircuitBuilder,
+        circuit_data::{
+            CircuitConfig, CircuitData, CommonCircuitData, VerifierCircuitData,
+            VerifierOnlyCircuitData,
+        },
+        proof::ProofWithPublicInputs,
+    },
+};
+
 use pod2::{
     backends::plonky2::{
         basetypes::DEFAULT_VD_SET,
-        basetypes::{Proof, ProofWithPublicInputs, C, D, F},
+        basetypes::{Proof, C, D, F},
         mainpod::Prover,
     },
     frontend::MainPodBuilder,
-    middleware::{
-        containers::Set, CommonCircuitData, Params, ToFields, VerifierCircuitData,
-        VerifierOnlyCircuitData,
-    },
+    middleware::{containers::Set, Params, ToFields},
     op,
 };
 
+use crate::poseidon_bn128::config::PoseidonBN128GoldilocksConfig;
+
+mod poseidon_bn128;
 mod simple_proof;
+mod wrap;
 
 #[derive(Parser)]
 struct Cli {
@@ -63,13 +73,13 @@ fn prove_pod() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // get POD's circuit related data (verifier_data, circuit_data, proof_with_pis)
-    let pod_verifier_data: VerifierOnlyCircuitData = pod.pod.verifier_data();
+    let pod_verifier_data: VerifierOnlyCircuitData<C, D> = pod.pod.verifier_data();
 
     let rec_main_pod_verifier_circuit_data =
         &*pod2::backends::plonky2::mainpod::cache_get_rec_main_pod_verifier_circuit_data(
             &pod.pod.params(),
         );
-    let pod_common_circuit_data: CommonCircuitData =
+    let pod_common_circuit_data: CommonCircuitData<F, D> =
         rec_main_pod_verifier_circuit_data.deref().common.clone();
 
     let pod_proof: Proof = pod.pod.proof();
@@ -100,25 +110,26 @@ fn prove_pod() -> Result<(), Box<dyn std::error::Error>> {
 
     // ---------------
     // store the files
-    store_files(
-        verifier_data.verifier_only,
-        common_circuit_data,
-        proof_with_pis,
-    )?;
+    // TODO
+    // store_files(
+    //     verifier_data.verifier_only,
+    //     common_circuit_data,
+    //     proof_with_pis,
+    // )?;
 
     Ok(())
 }
 
 /// encapsulates the POD's plonky2 proof into a new plonky2 proof
 fn encapsulate_proof(
-    verifier_data: VerifierOnlyCircuitData,
-    common_circuit_data: CommonCircuitData,
-    proof_with_pis: ProofWithPublicInputs,
+    verifier_data: VerifierOnlyCircuitData<C, D>,
+    common_circuit_data: CommonCircuitData<F, D>,
+    proof_with_pis: ProofWithPublicInputs<F, C, D>,
 ) -> Result<
     (
-        VerifierCircuitData,
-        CommonCircuitData,
-        ProofWithPublicInputs,
+        VerifierCircuitData<F, C, D>,
+        CommonCircuitData<F, D>,
+        ProofWithPublicInputs<F, C, D>,
     ),
     Box<dyn std::error::Error>,
 > {
@@ -174,14 +185,17 @@ fn compute_pod_proof() -> Result<pod2::frontend::MainPod, Box<dyn std::error::Er
 }
 
 fn store_files(
-    verifier_only_data: VerifierOnlyCircuitData,
-    common_circuit_data: CommonCircuitData,
-    proof_with_pis: ProofWithPublicInputs,
+    verifier_only_data: VerifierCircuitData<F, PoseidonBN128GoldilocksConfig, D>,
+    common_circuit_data: CircuitData<F, PoseidonBN128GoldilocksConfig, D>,
+    proof_with_pis: ProofWithPublicInputs<F, PoseidonBN128GoldilocksConfig, D>,
+    // verifier_only_data: VerifierOnlyCircuitData,
+    // common_circuit_data: CommonCircuitData,
+    // proof_with_pis: ProofWithPublicInputs,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // create directory
     fs::create_dir_all("testdata/pod")?;
 
-    let json = serde_json::to_string_pretty(&verifier_only_data)?;
+    let json = serde_json::to_string_pretty(&verifier_only_data.verifier_only)?;
     let mut file = fs::File::create(&"testdata/pod/verifier_only_circuit_data.json")?;
     file.write_all(&json.into_bytes())?;
 
@@ -189,7 +203,7 @@ fn store_files(
     let mut file = fs::File::create(&"testdata/pod/proof_with_public_inputs.json")?;
     file.write_all(&json.into_bytes())?;
 
-    let json = serde_json::to_string_pretty(&common_circuit_data)?;
+    let json = serde_json::to_string_pretty(&common_circuit_data.common)?;
     let mut file = fs::File::create(&"testdata/pod/common_circuit_data.json")?;
     file.write_all(&json.into_bytes())?;
 

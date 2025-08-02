@@ -134,9 +134,9 @@ func groth16Proof(r1cs constraint.ConstraintSystem, circuitName string, dummy bo
 	start := time.Now()
 	witness, err := frontend.NewWitness(&assignment, ecc.BN254.ScalarField())
 	checkErr(err)
-	witnessPublic, err := witness.Public()
-	checkErr(err)
-	fmt.Println("[WITNESS]", witnessPublic)
+	// witnessPublic, err := witness.Public()
+	// checkErr(err)
+	// fmt.Println("[WITNESS]", witnessPublic)
 	publicWitness, err := witness.Public()
 	checkErr(err)
 	if saveArtifacts {

@@ -1,33 +1,45 @@
 use plonky2::{
     field::types::Field,
     iop::witness::{PartialWitness, WitnessWrite},
-    plonk::{circuit_builder::CircuitBuilder, circuit_data::CircuitConfig},
+    plonk::{
+        circuit_builder::CircuitBuilder,
+        circuit_data::{
+            CircuitConfig, CircuitData, CommonCircuitData, VerifierCircuitData,
+            VerifierOnlyCircuitData,
+        },
+        proof::ProofWithPublicInputs,
+    },
 };
 use std::time::Instant;
 
-use pod2::{
-    backends::plonky2::basetypes::{ProofWithPublicInputs, C, D, F},
-    middleware::{CommonCircuitData, VerifierCircuitData},
-};
+use pod2::backends::plonky2::basetypes::{C, D, F};
 
 use crate::{encapsulate_proof, store_files};
+
+use crate::poseidon_bn128::config::PoseidonBN128GoldilocksConfig;
 
 // this method exists to be able to generate a quick proof (<1s) instead of the
 // full POD proof.
 pub(crate) fn prove_simple_proof() -> Result<(), Box<dyn std::error::Error>> {
     // fibonacci proof
     let start = Instant::now();
-    let (base_verifier_data, base_common_circuit_data, base_proof_with_pis) = simple_circuit()?;
+    let (base_verifier_data, base_common_circuit_data, base_proof_with_pis, base_circuit_data) =
+        simple_circuit()?;
     println!("[TIME] base proof took: {:?}", start.elapsed());
 
     // -------------------------------------------
     // generate new plonky2 proof
     let start = Instant::now();
-    let (verifier_data, common_circuit_data, proof_with_pis) = encapsulate_proof(
-        base_verifier_data.verifier_only,
-        base_common_circuit_data,
+    let (verifier_data, common_circuit_data, proof_with_pis) = crate::wrap::wrap_bn128(
+        &base_verifier_data,
+        // base_common_circuit_data,
         base_proof_with_pis,
     )?;
+    // let (verifier_data, common_circuit_data, proof_with_pis) = encapsulate_proof(
+    //     base_verifier_data.verifier_only,
+    //     base_common_circuit_data,
+    //     base_proof_with_pis,
+    // )?;
     println!("[TIME] encapsulation proof took: {:?}", start.elapsed());
 
     // sanity check: verify proof
@@ -35,20 +47,17 @@ pub(crate) fn prove_simple_proof() -> Result<(), Box<dyn std::error::Error>> {
 
     // ---------------
     // store the files
-    store_files(
-        verifier_data.verifier_only,
-        common_circuit_data,
-        proof_with_pis,
-    )?;
+    store_files(verifier_data, common_circuit_data, proof_with_pis)?;
 
     Ok(())
 }
 
 fn simple_circuit() -> Result<
     (
-        VerifierCircuitData,
-        CommonCircuitData,
-        ProofWithPublicInputs,
+        VerifierCircuitData<F, C, D>,
+        CommonCircuitData<F, D>,
+        ProofWithPublicInputs<F, C, D>,
+        CircuitData<F, C, D>,
     ),
     Box<dyn std::error::Error>,
 > {
@@ -82,5 +91,5 @@ fn simple_circuit() -> Result<
     let vd = data.verifier_data();
     let cd = vd.common.clone();
 
-    Ok((vd, cd, proof))
+    Ok((vd, cd, proof, data))
 }
