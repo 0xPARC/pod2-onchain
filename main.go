@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/consensys/gnark-crypto/ecc"
+	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
 	"github.com/consensys/gnark/backend/groth16"
+	groth16_bn254 "github.com/consensys/gnark/backend/groth16/bn254"
 	"github.com/consensys/gnark/backend/solidity"
 	"github.com/consensys/gnark/constraint"
 	"github.com/consensys/gnark/frontend"
@@ -90,13 +92,6 @@ func groth16Proof(r1cs constraint.ConstraintSystem, circuitName string, dummy bo
 		PublicInputs:            proofWithPis.PublicInputs,
 		VerifierOnlyCircuitData: verifierOnlyCircuitData,
 	}
-	// Don't serialize the circuit for now, since it takes up too much memory
-	// if saveArtifacts {
-	// 	fR1CS, err := os.Create("outputs/circuit")
-	//	checkErr(err)
-	// 	r1cs.WriteTo(fR1CS)
-	// 	fR1CS.Close()
-	// }
 
 	fmt.Println("Running circuit setup", time.Now())
 	if dummy {
@@ -134,11 +129,18 @@ func groth16Proof(r1cs constraint.ConstraintSystem, circuitName string, dummy bo
 	start := time.Now()
 	witness, err := frontend.NewWitness(&assignment, ecc.BN254.ScalarField())
 	checkErr(err)
-	// witnessPublic, err := witness.Public()
-	// checkErr(err)
-	// fmt.Println("[WITNESS]", witnessPublic)
-	publicWitness, err := witness.Public()
+
+	// print the public witness (public inputs)
+	witnessPublic, err := witness.Public()
 	checkErr(err)
+	witnessSchema, err := frontend.NewSchema(ecc.BN254.ScalarField(), &assignment)
+	checkErr(err)
+	witnessPublicJSON, err := witnessPublic.ToJSON(witnessSchema)
+	checkErr(err)
+	fmt.Println("[public witness]:", string(witnessPublicJSON))
+	// publicWitness, err := witness.Public()
+	// checkErr(err)
+
 	if saveArtifacts {
 		fWitness, err := os.Create("outputs/witness")
 		checkErr(err)
@@ -165,7 +167,7 @@ func groth16Proof(r1cs constraint.ConstraintSystem, circuitName string, dummy bo
 	}
 
 	fmt.Println("Verifying proof", time.Now())
-	err = groth16.Verify(proof, vk, publicWitness)
+	err = groth16.Verify(proof, vk, witnessPublic)
 	checkErr(err)
 
 	const fpSize = 4 * 8
@@ -200,4 +202,62 @@ func groth16Proof(r1cs constraint.ConstraintSystem, circuitName string, dummy bo
 	println("c[0] is ", c[0].String())
 	println("c[1] is ", c[1].String())
 
+	//
+
+	// convert public inputs
+	inputBytes, err := witnessPublic.MarshalBinary()
+	checkErr(err)
+
+	fmt.Println("LEN COMM", len(proof.(*groth16_bn254.Proof).Commitments))
+
+	const nbPublicInputs = 8 // WIP
+	nbInputs := len(inputBytes) / fr.Bytes
+	if nbInputs != nbPublicInputs {
+		fmt.Println("nbInputs", nbInputs)
+		fmt.Println("nbPublicInputs", nbPublicInputs)
+		panic("nbInputs != nbPublicInputs")
+	}
+	var input [nbPublicInputs]*big.Int
+	for i := 0; i < nbInputs; i++ {
+		var e fr.Element
+		e.SetBytes(inputBytes[fr.Bytes*i : fr.Bytes*(i+1)])
+		input[i] = new(big.Int)
+		e.BigInt(input[i])
+	}
+	fmt.Println("[solidity] inputs", input)
+
+	// solidity contract inputs
+	var proofSol [8]*big.Int
+	// proof.Ar, proof.Bs, proof.Krs
+	for i := 0; i < 8; i++ {
+		proofSol[i] = new(big.Int).SetBytes(proofBytes[fpSize*i : fpSize*(i+1)])
+	}
+	fmt.Println("[solidity] proof", proof)
+
+	// prepare commitments for calling
+	// fmt.Println("LEN COMM", len(proof.(*groth16_bn254.Proof).Commitments))
+	const nbCommitments = 1
+	if nbCommitments != len(proof.(*groth16_bn254.Proof).Commitments) {
+		panic("nbCommitments!=len(proof.(*groth16_bn254.Proof).Commitments)")
+	}
+	commitmentsBI := new(big.Int).SetBytes(proofBytes[fpSize*8 : fpSize*8+4])
+	commitmentCount := int(commitmentsBI.Int64())
+
+	if commitmentCount != nbCommitments {
+		panic("commitmentCount != .NbCommitments")
+	}
+
+	var commitments [2 * nbCommitments]*big.Int
+	var commitmentPok [2]*big.Int
+
+	// commitments
+	for i := 0; i < 2*commitmentCount; i++ {
+		commitments[i] = new(big.Int).SetBytes(proofBytes[fpSize*8+4+i*fpSize : fpSize*8+4+(i+1)*fpSize])
+	}
+	fmt.Println("[solidity] commitments", commitments)
+
+	// commitmentPok
+	commitmentPok[0] = new(big.Int).SetBytes(proofBytes[fpSize*8+4+2*commitmentCount*fpSize : fpSize*8+4+2*commitmentCount*fpSize+fpSize])
+	commitmentPok[1] = new(big.Int).SetBytes(proofBytes[fpSize*8+4+2*commitmentCount*fpSize+fpSize : fpSize*8+4+2*commitmentCount*fpSize+2*fpSize])
+	fmt.Println("[solidity] commitmentPok", commitmentPok)
 }

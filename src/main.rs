@@ -1,5 +1,6 @@
 //! example adapted from pod2/examples/main_pod_points.rs
 
+use anyhow::Result;
 use clap::Parser;
 use itertools::Itertools;
 use std::fs;
@@ -8,8 +9,8 @@ use std::ops::Deref;
 use std::time::Instant;
 
 use plonky2::{
-    field::types::Field,
     iop::witness::{PartialWitness, WitnessWrite},
+    plonk::config::GenericConfig,
     plonk::{
         circuit_builder::CircuitBuilder,
         circuit_data::{
@@ -35,7 +36,6 @@ use crate::poseidon_bn128::config::PoseidonBN128GoldilocksConfig;
 
 mod poseidon_bn128;
 mod simple_proof;
-mod wrap;
 
 #[derive(Parser)]
 struct Cli {
@@ -48,7 +48,7 @@ struct Cli {
     prove: String,
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<()> {
     let args = Cli::parse();
 
     if args.prove == "pod" {
@@ -62,7 +62,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn prove_pod() -> Result<(), Box<dyn std::error::Error>> {
+fn prove_pod() -> Result<()> {
     // ---------------------------
     // obtain the pod to be proven
     let start = Instant::now();
@@ -98,16 +98,11 @@ fn prove_pod() -> Result<(), Box<dyn std::error::Error>> {
     // -------------------------------------------
     // generate new plonky2 proof from POD's proof
     let start = Instant::now();
-    let (verifier_data, common_circuit_data, proof_with_pis) = crate::wrap::wrap_bn128(
+    let (verifier_data, common_circuit_data, proof_with_pis) = wrap_bn128(
         pod_verifier_data,
         pod_common_circuit_data,
         pod_proof_with_pis,
     )?;
-    // let (verifier_data, common_circuit_data, proof_with_pis) = encapsulate_proof(
-    //     pod_verifier_data,
-    //     pod_common_circuit_data,
-    //     pod_proof_with_pis,
-    // )?;
     println!("[TIME] encapsulation proof took: {:?}", start.elapsed());
 
     // sanity check: verify proof
@@ -115,7 +110,6 @@ fn prove_pod() -> Result<(), Box<dyn std::error::Error>> {
 
     // ---------------
     // store the files
-    // TODO
     store_files(
         verifier_data.verifier_only,
         common_circuit_data,
@@ -125,50 +119,44 @@ fn prove_pod() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/*
-/// encapsulates the POD's plonky2 proof into a new plonky2 proof
-fn encapsulate_proof(
-    verifier_data: VerifierOnlyCircuitData<C, D>,
+pub fn wrap_bn128(
+    verifier_only_data: VerifierOnlyCircuitData<C, D>,
     common_circuit_data: CommonCircuitData<F, D>,
-    proof_with_pis: ProofWithPublicInputs<F, C, D>,
-) -> Result<
-    (
-        VerifierCircuitData<F, C, D>,
-        CommonCircuitData<F, D>,
-        ProofWithPublicInputs<F, C, D>,
-    ),
-    Box<dyn std::error::Error>,
-> {
-    // build targets
-    // let config = common_circuit_data.config.clone();
-    // let config = CircuitConfig::standard_recursion_config();
-    let config = CircuitConfig::standard_ecc_config(); // to match the 136 wires in gnark samples
-    let mut builder = CircuitBuilder::<F, D>::new(config.clone());
-    let verifier_data_targ = builder.constant_verifier_data(&verifier_data);
-    let proof_targ = builder.add_virtual_proof_with_pis(&common_circuit_data);
-    builder.verify_proof::<C>(&proof_targ, &verifier_data_targ, &common_circuit_data);
+    proof_with_public_inputs: ProofWithPublicInputs<F, C, D>,
+) -> Result<(
+    VerifierCircuitData<F, PoseidonBN128GoldilocksConfig, D>,
+    CircuitData<F, PoseidonBN128GoldilocksConfig, D>,
+    ProofWithPublicInputs<F, PoseidonBN128GoldilocksConfig, D>,
+)> {
+    let config = CircuitConfig::standard_recursion_config();
+    let mut builder: CircuitBuilder<<PoseidonBN128GoldilocksConfig as GenericConfig<D>>::F, D> =
+        CircuitBuilder::new(config);
 
-    // WIP
-    builder.add_gate(
-        plonky2::gates::constant::ConstantGate::new(config.num_constants),
-        vec![],
+    // create circuit logic
+    let proof_with_pis_target = builder.add_virtual_proof_with_pis(&common_circuit_data);
+    let verifier_circuit_target = builder.constant_verifier_data(&verifier_only_data);
+    builder.verify_proof::<C>(
+        &proof_with_pis_target,
+        &verifier_circuit_target,
+        &common_circuit_data,
     );
 
-    let data = builder.build::<C>();
+    builder.register_public_inputs(&proof_with_pis_target.public_inputs);
+
+    let circuit_data = builder.build::<PoseidonBN128GoldilocksConfig>();
 
     // set targets
-    let mut pw = PartialWitness::<F>::new();
-    pw.set_proof_with_pis_target(&proof_targ, &proof_with_pis)?;
+    let mut pw = PartialWitness::new();
+    pw.set_verifier_data_target(&verifier_circuit_target, &verifier_only_data)?;
+    pw.set_proof_with_pis_target(&proof_with_pis_target, &proof_with_public_inputs)?;
 
-    let vd = data.verifier_data();
-    let cd = vd.common.clone();
-    let proof = data.prove(pw)?;
+    let vd = circuit_data.verifier_data();
+    let proof = circuit_data.prove(pw)?;
 
-    Ok((vd, cd, proof))
+    Ok((vd, circuit_data, proof))
 }
-*/
 
-fn compute_pod_proof() -> Result<pod2::frontend::MainPod, Box<dyn std::error::Error>> {
+fn compute_pod_proof() -> Result<pod2::frontend::MainPod> {
     let params = Params {
         max_input_signed_pods: 0,
         ..Default::default()
@@ -192,18 +180,13 @@ fn compute_pod_proof() -> Result<pod2::frontend::MainPod, Box<dyn std::error::Er
 }
 
 fn store_files(
-    // verifier_data: VerifierCircuitData<F, PoseidonBN128GoldilocksConfig, D>,
     verifier_only_data: VerifierOnlyCircuitData<PoseidonBN128GoldilocksConfig, D>,
     common_circuit_data: CircuitData<F, PoseidonBN128GoldilocksConfig, D>,
     proof_with_pis: ProofWithPublicInputs<F, PoseidonBN128GoldilocksConfig, D>,
-    // verifier_only_data: VerifierOnlyCircuitData,
-    // common_circuit_data: CommonCircuitData,
-    // proof_with_pis: ProofWithPublicInputs,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<()> {
     // create directory
     fs::create_dir_all("testdata/pod")?;
 
-    // let json = serde_json::to_string_pretty(&verifier_data.verifier_only)?;
     let json = serde_json::to_string_pretty(&verifier_only_data)?;
     let mut file = fs::File::create(&"testdata/pod/verifier_only_circuit_data.json")?;
     file.write_all(&json.into_bytes())?;
