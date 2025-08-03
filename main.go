@@ -2,18 +2,22 @@ package main
 
 import (
 	"bytes"
-	"crypto/sha256"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"math/big"
 	"os"
+	"os/exec"
+	"strconv"
 	"time"
 
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
+	fr_bn254 "github.com/consensys/gnark-crypto/ecc/bn254/fr"
+	"github.com/consensys/gnark/backend"
 	"github.com/consensys/gnark/backend/groth16"
-	groth16_bn254 "github.com/consensys/gnark/backend/groth16/bn254"
 	"github.com/consensys/gnark/backend/solidity"
+	"github.com/consensys/gnark/backend/witness"
 	"github.com/consensys/gnark/constraint"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/frontend/cs/r1cs"
@@ -21,11 +25,12 @@ import (
 	"github.com/succinctlabs/gnark-plonky2-verifier/types"
 	"github.com/succinctlabs/gnark-plonky2-verifier/variables"
 	"github.com/succinctlabs/gnark-plonky2-verifier/verifier"
+	"golang.org/x/crypto/sha3"
 )
 
-func checkErr(err error) {
+func checkErr(err error, msg ...string) {
 	if err != nil {
-		fmt.Println(err)
+		fmt.Println(err, msg)
 		os.Exit(1)
 	}
 }
@@ -35,7 +40,6 @@ func main() {
 
 	plonky2Circuit := flag.String("plonky2-circuit", "pod", "name of the plonky2 circuit to benchmark")
 	profileCircuit := flag.Bool("profile", true, "profile the circuit")
-	dummySetup := flag.Bool("dummy", false, "use dummy setup")
 	flag.Parse()
 
 	commonCircuitData := types.ReadCommonCircuitData("testdata/" + *plonky2Circuit + "/common_circuit_data.json")
@@ -77,10 +81,10 @@ func main() {
 	}
 
 	saveArtifacts := true
-	groth16Proof(r1cs, *plonky2Circuit, *dummySetup, saveArtifacts)
+	groth16Proof(r1cs, *plonky2Circuit, saveArtifacts)
 }
 
-func groth16Proof(r1cs constraint.ConstraintSystem, circuitName string, dummy bool, saveArtifacts bool) {
+func groth16Proof(r1cs constraint.ConstraintSystem, circuitName string, saveArtifacts bool) {
 	var pk groth16.ProvingKey
 	var vk groth16.VerifyingKey
 	var err error
@@ -94,13 +98,7 @@ func groth16Proof(r1cs constraint.ConstraintSystem, circuitName string, dummy bo
 	}
 
 	fmt.Println("Running circuit setup", time.Now())
-	if dummy {
-		fmt.Println("Using dummy setup")
-		pk, err = groth16.DummySetup(r1cs)
-	} else {
-		fmt.Println("Using real setup")
-		pk, vk, err = groth16.Setup(r1cs)
-	}
+	pk, vk, err = groth16.Setup(r1cs)
 	checkErr(err)
 
 	if saveArtifacts {
@@ -119,8 +117,8 @@ func groth16Proof(r1cs constraint.ConstraintSystem, circuitName string, dummy bo
 		// write solidity smart contract into a file
 		fSolidity, err := os.Create("outputs/Verifier.sol")
 		checkErr(err)
-		// use sha256 as hashtofield
-		err = vk.ExportSolidity(fSolidity, solidity.WithHashToFieldFunction(sha256.New()))
+		// use keccak256 (ethereum version) as hashtofield
+		err = vk.ExportSolidity(fSolidity, solidity.WithHashToFieldFunction(sha3.NewLegacyKeccak256()))
 		checkErr(err)
 		fSolidity.Close()
 	}
@@ -138,8 +136,6 @@ func groth16Proof(r1cs constraint.ConstraintSystem, circuitName string, dummy bo
 	witnessPublicJSON, err := witnessPublic.ToJSON(witnessSchema)
 	checkErr(err)
 	fmt.Println("[public witness]:", string(witnessPublicJSON))
-	// publicWitness, err := witness.Public()
-	// checkErr(err)
 
 	if saveArtifacts {
 		fWitness, err := os.Create("outputs/witness")
@@ -151,7 +147,7 @@ func groth16Proof(r1cs constraint.ConstraintSystem, circuitName string, dummy bo
 
 	fmt.Println("Creating proof", time.Now())
 	start = time.Now()
-	proof, err := groth16.Prove(r1cs, pk, witness)
+	proof, err := groth16.Prove(r1cs, pk, witness, backend.WithProverHashToFieldFunction(sha3.NewLegacyKeccak256()))
 	checkErr(err)
 	fmt.Println("[DBG] proof gen", time.Since(start).Milliseconds())
 	if saveArtifacts {
@@ -162,12 +158,11 @@ func groth16Proof(r1cs constraint.ConstraintSystem, circuitName string, dummy bo
 	}
 
 	if vk == nil {
-		fmt.Println("vk is nil, means you're using dummy setup and we skip verification of proof")
-		return
+		panic("vk is nil")
 	}
 
 	fmt.Println("Verifying proof", time.Now())
-	err = groth16.Verify(proof, vk, witnessPublic)
+	err = groth16.Verify(proof, vk, witnessPublic, backend.WithVerifierHashToFieldFunction(sha3.NewLegacyKeccak256()))
 	checkErr(err)
 
 	const fpSize = 4 * 8
@@ -175,84 +170,37 @@ func groth16Proof(r1cs constraint.ConstraintSystem, circuitName string, dummy bo
 	proof.WriteRawTo(&buf)
 	proofBytes := buf.Bytes()
 
-	var (
-		a [2]*big.Int
-		b [2][2]*big.Int
-		c [2]*big.Int
-	)
-
-	// proof.Ar, proof.Bs, proof.Krs
-	a[0] = new(big.Int).SetBytes(proofBytes[fpSize*0 : fpSize*1])
-	a[1] = new(big.Int).SetBytes(proofBytes[fpSize*1 : fpSize*2])
-	b[0][0] = new(big.Int).SetBytes(proofBytes[fpSize*2 : fpSize*3])
-	b[0][1] = new(big.Int).SetBytes(proofBytes[fpSize*3 : fpSize*4])
-	b[1][0] = new(big.Int).SetBytes(proofBytes[fpSize*4 : fpSize*5])
-	b[1][1] = new(big.Int).SetBytes(proofBytes[fpSize*5 : fpSize*6])
-	c[0] = new(big.Int).SetBytes(proofBytes[fpSize*6 : fpSize*7])
-	c[1] = new(big.Int).SetBytes(proofBytes[fpSize*7 : fpSize*8])
-
-	println("a[0] is ", a[0].String())
-	println("a[1] is ", a[1].String())
-
-	println("b[0][0] is ", b[0][0].String())
-	println("b[0][1] is ", b[0][1].String())
-	println("b[1][0] is ", b[1][0].String())
-	println("b[1][1] is ", b[1][1].String())
-
-	println("c[0] is ", c[0].String())
-	println("c[1] is ", c[1].String())
-
-	//
-
 	// convert public inputs
 	inputBytes, err := witnessPublic.MarshalBinary()
 	checkErr(err)
 
-	fmt.Println("LEN COMM", len(proof.(*groth16_bn254.Proof).Commitments))
-
-	const nbPublicInputs = 8 // WIP
 	nbInputs := len(inputBytes) / fr.Bytes
-	if nbInputs != nbPublicInputs {
-		fmt.Println("nbInputs", nbInputs)
-		fmt.Println("nbPublicInputs", nbPublicInputs)
-		panic("nbInputs != nbPublicInputs")
-	}
-	var input [nbPublicInputs]*big.Int
+	var input []*big.Int
 	for i := 0; i < nbInputs; i++ {
 		var e fr.Element
 		e.SetBytes(inputBytes[fr.Bytes*i : fr.Bytes*(i+1)])
-		input[i] = new(big.Int)
+		input = append(input, new(big.Int))
 		e.BigInt(input[i])
 	}
 	fmt.Println("[solidity] inputs", input)
 
 	// solidity contract inputs
 	var proofSol [8]*big.Int
-	// proof.Ar, proof.Bs, proof.Krs
 	for i := 0; i < 8; i++ {
 		proofSol[i] = new(big.Int).SetBytes(proofBytes[fpSize*i : fpSize*(i+1)])
 	}
 	fmt.Println("[solidity] proof", proof)
 
-	// prepare commitments for calling
-	// fmt.Println("LEN COMM", len(proof.(*groth16_bn254.Proof).Commitments))
-	const nbCommitments = 1
-	if nbCommitments != len(proof.(*groth16_bn254.Proof).Commitments) {
-		panic("nbCommitments!=len(proof.(*groth16_bn254.Proof).Commitments)")
-	}
+	// prepare commitments
 	commitmentsBI := new(big.Int).SetBytes(proofBytes[fpSize*8 : fpSize*8+4])
 	commitmentCount := int(commitmentsBI.Int64())
 
-	if commitmentCount != nbCommitments {
-		panic("commitmentCount != .NbCommitments")
-	}
-
-	var commitments [2 * nbCommitments]*big.Int
+	commitments := []*big.Int{}
 	var commitmentPok [2]*big.Int
 
 	// commitments
 	for i := 0; i < 2*commitmentCount; i++ {
-		commitments[i] = new(big.Int).SetBytes(proofBytes[fpSize*8+4+i*fpSize : fpSize*8+4+(i+1)*fpSize])
+		commitments = append(commitments, new(big.Int).SetBytes(proofBytes[fpSize*8+4+i*fpSize:fpSize*8+4+(i+1)*fpSize]))
 	}
 	fmt.Println("[solidity] commitments", commitments)
 
@@ -260,4 +208,79 @@ func groth16Proof(r1cs constraint.ConstraintSystem, circuitName string, dummy bo
 	commitmentPok[0] = new(big.Int).SetBytes(proofBytes[fpSize*8+4+2*commitmentCount*fpSize : fpSize*8+4+2*commitmentCount*fpSize+fpSize])
 	commitmentPok[1] = new(big.Int).SetBytes(proofBytes[fpSize*8+4+2*commitmentCount*fpSize+fpSize : fpSize*8+4+2*commitmentCount*fpSize+2*fpSize])
 	fmt.Println("[solidity] commitmentPok", commitmentPok)
+
+	// check that the proof can be verified in the Solidity smart contract
+	// through gnark-solidity-checker
+	if _vk, ok := vk.(solidity.VerifyingKey); ok {
+		fmt.Println("VERIFY solidity")
+		solidityVerification(_vk, proof, witnessPublic, []solidity.ExportOption{solidity.WithHashToFieldFunction(sha3.NewLegacyKeccak256())})
+	}
+}
+
+// function from gnark/test/assert_solidity.go
+func solidityVerification(vk solidity.VerifyingKey,
+	proof any,
+	validPublicWitness witness.Witness,
+	opts []solidity.ExportOption,
+) {
+	// make dir
+	err := os.Mkdir("outputs/solidity", os.ModePerm)
+	checkErr(err)
+
+	// export solidity contract
+	fSolidity, err := os.Create("outputs/solidity/gnark_verifier.sol")
+	checkErr(err)
+
+	err = vk.ExportSolidity(fSolidity, opts...)
+	checkErr(err)
+
+	err = fSolidity.Close()
+	checkErr(err)
+
+	// generate assets
+	// gnark-solidity-checker generate --dir tmpdir --solidity contract_g16.sol
+	cmd := exec.Command("gnark-solidity-checker", "generate", "--dir", "outputs/solidity", "--solidity", "gnark_verifier.sol")
+	fmt.Println("running ", cmd.String())
+	out, err := cmd.CombinedOutput()
+	checkErr(err, string(out))
+
+	// len(vk.K) - 1 == len(publicWitness) + len(commitments)
+	numOfCommitments := vk.NbPublicWitness() - len(validPublicWitness.Vector().(fr_bn254.Vector))
+
+	checkerOpts := []string{"verify"}
+	checkerOpts = append(checkerOpts, "--groth16")
+
+	// proof to hex
+	_proof, ok := proof.(interface{ MarshalSolidity() []byte })
+	if !ok {
+		panic("proof does not implement MarshalSolidity()")
+	}
+
+	proofStr := hex.EncodeToString(_proof.MarshalSolidity())
+
+	if numOfCommitments > 0 {
+		checkerOpts = append(checkerOpts, "--commitment", strconv.Itoa(numOfCommitments))
+	}
+
+	// public witness to hex
+	bPublicWitness, err := validPublicWitness.MarshalBinary()
+	checkErr(err)
+	// first 4 bytes -> nbPublic
+	// next 4 bytes -> nbSecret
+	// next 4 bytes -> nb elements in the vector (== nbPublic + nbSecret)
+	bPublicWitness = bPublicWitness[12:]
+	publicWitnessStr := hex.EncodeToString(bPublicWitness)
+
+	checkerOpts = append(checkerOpts, "--dir", "outputs/solidity")
+	checkerOpts = append(checkerOpts, "--nb-public-inputs", strconv.Itoa(len(validPublicWitness.Vector().(fr_bn254.Vector))))
+	checkerOpts = append(checkerOpts, "--proof", proofStr)
+	checkerOpts = append(checkerOpts, "--public-inputs", publicWitnessStr)
+
+	// verify proof
+	// gnark-solidity-checker verify --dir tmdir --groth16 --nb-public-inputs 1 --proof 1234 --public-inputs dead
+	cmd = exec.Command("gnark-solidity-checker", checkerOpts...)
+	fmt.Println("running ", cmd.String())
+	out, err = cmd.CombinedOutput()
+	checkErr(err, string(out))
+
 }
