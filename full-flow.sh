@@ -2,7 +2,7 @@
 
 echo "================================================="
 echo "- [generating plonky2 proof]: cargo run --release"
-cargo run --release
+cargo run --release test_pod_flow -- --nocapture
 
 echo -e "\n================================================================"
 echo "- [generating groth16 proof & solidity contract]: go run main.go"
