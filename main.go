@@ -224,8 +224,7 @@ func solidityVerification(vk solidity.VerifyingKey,
 	opts []solidity.ExportOption,
 ) {
 	// make dir
-	err := os.Mkdir("outputs/solidity", os.ModePerm)
-	checkErr(err)
+	_ = os.Mkdir("outputs/solidity", os.ModePerm)
 
 	// export solidity contract
 	fSolidity, err := os.Create("outputs/solidity/gnark_verifier.sol")
