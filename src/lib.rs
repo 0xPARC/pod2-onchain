@@ -99,6 +99,7 @@ pub fn wrap_bn128(
 
     builder.register_public_inputs(&proof_with_pis_target.public_inputs);
 
+    println!("encapsulator circuit num_gates: {}", &builder.num_gates());
     let circuit_data = builder.build::<PoseidonBN128GoldilocksConfig>();
 
     // set targets
@@ -212,6 +213,41 @@ mod tests {
         Ok((vd, cd, proof))
     }
 
+    pub fn simple_circuit_2(
+        num_gates: usize,
+    ) -> Result<(
+        VerifierCircuitData<F, C, D>,
+        CommonCircuitData<F, D>,
+        ProofWithPublicInputs<F, C, D>,
+    )> {
+        let config = CircuitConfig::standard_recursion_config();
+        let mut builder = CircuitBuilder::<F, D>::new(config);
+
+        use plonky2::hash::hash_types::{HashOut, HashOutTarget};
+        use plonky2::hash::poseidon::PoseidonHash;
+
+        // The arithmetic circuit.
+        let input_targ = builder.add_virtual_hashes(1)[0];
+        let mut output_targ: HashOutTarget = input_targ;
+        for _ in 0..num_gates - 1 {
+            output_targ = builder
+                .hash_n_to_hash_no_pad::<PoseidonHash>(output_targ.elements.clone().to_vec());
+        }
+
+        // Provide initial values.
+        let mut pw = PartialWitness::new();
+        pw.set_hash_target(input_targ, HashOut::from_partial(&[F::ONE]))?;
+
+        dbg!(&builder.num_gates());
+        let data = builder.build::<C>();
+
+        let proof = data.prove(pw)?;
+        let vd = data.verifier_data();
+        let cd = vd.common.clone();
+
+        Ok((vd, cd, proof))
+    }
+
     // this test exists to be able to generate a quick proof (<1s) instead of
     // the full POD proof.
     #[test]
@@ -243,6 +279,36 @@ mod tests {
             common_circuit_data,
             proof_with_pis,
         )?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_simple_proof_flow_2() -> Result<()> {
+        // use circuits of size 2^16 to 2^20
+        // for i in 16..=20 {
+        for i in 16..=20 {
+            println!("===\nusing circuit size 2^{}", i);
+            let start = Instant::now();
+            let (base_verifier_data, base_common_circuit_data, base_proof_with_pis) =
+                simple_circuit_2(1 << i)?;
+            println!("[TIME] base proof took: {:?}", start.elapsed());
+
+            // generate new plonky2 proof
+            let start = Instant::now();
+            let (verifier_data, _common_circuit_data, proof_with_pis) = wrap_bn128(
+                base_verifier_data.verifier_only,
+                base_common_circuit_data,
+                base_proof_with_pis,
+            )?;
+            println!(
+                "[TIME] encapsulation proof (groth16-friendly) took: {:?}",
+                start.elapsed()
+            );
+
+            // sanity check: verify proof
+            verifier_data.verify(proof_with_pis.clone())?;
+        }
 
         Ok(())
     }
