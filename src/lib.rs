@@ -2,12 +2,25 @@ use anyhow::Result;
 use itertools::Itertools;
 use std::fs;
 use std::io::Write;
+use std::iter;
 use std::ops::Deref;
 use std::path::Path;
 use std::time::Instant;
 
+use sha2::{Digest, Sha256};
+
 use plonky2::{
-    iop::witness::{PartialWitness, WitnessWrite},
+    field::types::{Field, PrimeField64},
+    hash::{
+        hash_types::{HashOut, HashOutTarget, RichField, NUM_HASH_OUT_ELTS},
+        hashing::PlonkyPermutation,
+        poseidon::PoseidonHash,
+        poseidon::PoseidonPermutation,
+    },
+    iop::{
+        target::Target,
+        witness::{PartialWitness, WitnessWrite},
+    },
     plonk::config::GenericConfig,
     plonk::{
         circuit_builder::CircuitBuilder,
@@ -15,13 +28,19 @@ use plonky2::{
             CircuitConfig, CircuitData, CommonCircuitData, VerifierCircuitData,
             VerifierOnlyCircuitData,
         },
+        config::AlgebraicHasher,
         proof::ProofWithPublicInputs,
     },
 };
 
 use pod2::{
-    backends::plonky2::basetypes::{Proof, C, D, F},
-    middleware::ToFields,
+    backends::plonky2::{
+        basetypes::{Proof, C, D, F},
+        circuits::common::{Flattenable, StatementTarget},
+        mainpod,
+        mainpod::{pad_statement, statement::Statement as bStatement},
+    },
+    middleware::{Params, Statement, ToFields},
 };
 
 use crate::poseidon_bn128::config::PoseidonBN128GoldilocksConfig;
@@ -65,6 +84,8 @@ pub fn prove_pod(
         pod_verifier_data,
         pod_common_circuit_data,
         pod_proof_with_pis,
+        &pod.public_statements,
+        pod.params,
     )?;
     println!("[TIME] encapsulation proof took: {:?}", start.elapsed());
 
@@ -75,10 +96,147 @@ pub fn prove_pod(
     Ok((verifier_data, common_circuit_data, proof_with_pis))
 }
 
+// alternative calculate_id version, which instead of using Goldilocks Poseidon,
+// it uses sha256
+pub fn calculate_id_alt(statements: &[bStatement], params: &Params) -> pod2::middleware::Hash {
+    assert!(statements.len() <= params.num_public_statements_id);
+    assert!(params.max_public_statements <= params.num_public_statements_id);
+
+    let mut none_st: bStatement = pod2::middleware::Statement::None.into();
+    pod2::backends::plonky2::mainpod::pad_statement(params, &mut none_st);
+    let statements_back_padded = statements
+        .iter()
+        .chain(std::iter::repeat(&none_st))
+        .take(params.num_public_statements_id)
+        .collect_vec();
+    let field_elems: Vec<F> = statements_back_padded
+        .iter()
+        .rev()
+        .flat_map(|statement| statement.to_fields(params))
+        .collect::<Vec<_>>();
+
+    let b: Vec<u8> = field_elems
+        .iter()
+        .flat_map(|e| e.to_canonical_u64().to_le_bytes())
+        .collect();
+    let h: Vec<u8> = Sha256::digest(&b).to_vec();
+    bytes_to_hash(h)
+}
+
+fn bytes_to_hash(b: Vec<u8>) -> pod2::middleware::Hash {
+    assert_eq!(b.len(), 32);
+    // make explicit (to the reader of this code) that we only use the first 28
+    // bytes, in chunks of 7 bytes, so that we can fit them into 4 field
+    // elements (a pod2's Hash type)
+    let b: Vec<u8> = b[..28].to_vec();
+    // let v: Vec<F> = b
+    //     .chunks(7)
+    //     .map(|bytes| {
+    //         let u = u64::from_le_bytes(vec![&[0u8], bytes].concat().try_into().unwrap());
+    //         F::from_canonical_u64(u)
+    //     })
+    //     .collect();
+    // pod2::middleware::Hash(v.try_into().unwrap())
+    let v: [F; 4] = std::array::from_fn(|i| {
+        F::from_canonical_u64(u64::from_le_bytes(
+            vec![&[0_u8], &b[i * 7..i * 7 + 7]]
+                .concat()
+                .try_into()
+                .unwrap(),
+        ))
+    });
+    pod2::middleware::Hash(v)
+}
+
+// TODO, NOTE: the calculate_id methods will need to be adapted to the latest pod2 version after
+// the PRs are merged:
+// - https://github.com/0xPARC/pod2/pull/397
+// - https://github.com/0xPARC/pod2/pull/394
+
+// TODO this method should be removed and just exposed in the pod2 library
+fn precompute_hash_state<F: RichField, P: PlonkyPermutation<F>>(inputs: &[F]) -> (P, &[F]) {
+    let (inputs, inputs_rem) = inputs.split_at((inputs.len() / P::RATE) * P::RATE);
+    let mut perm = P::new(core::iter::repeat(F::ZERO));
+
+    // Absorb all inputs up to the biggest multiple of RATE.
+    for input_chunk in inputs.chunks(P::RATE) {
+        perm.set_from_slice(input_chunk, 0);
+        perm.permute();
+    }
+
+    (perm, inputs_rem)
+}
+// TODO this method should be removed and just exposed in the pod2 library
+fn hash_from_state_circuit<H: AlgebraicHasher<F>, P: PlonkyPermutation<F>>(
+    builder: &mut CircuitBuilder<F, D>,
+    perm: P,
+    inputs: &[Target],
+) -> HashOutTarget {
+    let mut state =
+        H::AlgebraicPermutation::new(perm.as_ref().iter().map(|v| builder.constant(*v)));
+
+    // Absorb all input chunks.
+    for input_chunk in inputs.chunks(H::AlgebraicPermutation::RATE) {
+        // Overwrite the first r elements with the inputs. This differs from a standard sponge,
+        // where we would xor or add in the inputs. This is a well-known variant, though,
+        // sometimes called "overwrite mode".
+        state.set_from_slice(input_chunk, 0);
+        state = builder.permute::<H>(state);
+    }
+
+    let num_outputs = NUM_HASH_OUT_ELTS;
+    // Squeeze until we have the desired number of outputs.
+    let mut outputs = Vec::with_capacity(num_outputs);
+    loop {
+        for &s in state.squeeze() {
+            outputs.push(s);
+            if outputs.len() == num_outputs {
+                return HashOutTarget::from_vec(outputs);
+            }
+        }
+        state = builder.permute::<H>(state);
+    }
+}
+
+// alternative calculate_id_circuit version, which instead of using Goldilocks Poseidon,
+// it uses sha256
+fn calculate_id_circuit_alt(
+    params: &Params,
+    builder: &mut CircuitBuilder<F, D>,
+    // These statements will be padded to reach `num_statements`
+    statements: &[StatementTarget],
+) -> HashOutTarget {
+    assert!(statements.len() <= params.num_public_statements_id);
+
+    let statements_rev_flattened = statements.iter().rev().flat_map(|s| s.flatten());
+    let mut none_st = mainpod::Statement::from(Statement::None);
+    pad_statement(params, &mut none_st);
+    let front_pad_elts = iter::repeat(&none_st)
+        .take(params.num_public_statements_id - statements.len())
+        .flat_map(|s| s.to_fields(params))
+        .collect_vec();
+    let (perm, front_pad_elts_rem) =
+        precompute_hash_state::<F, PoseidonPermutation<F>>(&front_pad_elts);
+
+    // WIP: instead of precompute poseidon & using poseidon, use sha256
+    // Precompute the Poseidon state for the initial padding chunks
+    let inputs = front_pad_elts_rem
+        .iter()
+        .map(|v| builder.constant(*v))
+        .chain(statements_rev_flattened)
+        .collect_vec();
+    let id =
+        hash_from_state_circuit::<PoseidonHash, PoseidonPermutation<F>>(builder, perm, &inputs);
+
+    id
+}
+
 pub fn wrap_bn128(
     verifier_only_data: VerifierOnlyCircuitData<C, D>,
     common_circuit_data: CommonCircuitData<F, D>,
     proof_with_public_inputs: ProofWithPublicInputs<F, C, D>,
+    pub_statements: &[Statement],
+    pod_params: Params,
 ) -> Result<(
     VerifierCircuitData<F, PoseidonBN128GoldilocksConfig, D>,
     CircuitData<F, PoseidonBN128GoldilocksConfig, D>,
@@ -96,8 +254,11 @@ pub fn wrap_bn128(
         &verifier_circuit_target,
         &common_circuit_data,
     );
-
     builder.register_public_inputs(&proof_with_pis_target.public_inputs);
+
+    // register as public inputs the podid's sha256 hash version
+    let podid_sha256_target = builder.add_virtual_hash();
+    builder.register_public_inputs(&podid_sha256_target.elements);
 
     let circuit_data = builder.build::<PoseidonBN128GoldilocksConfig>();
 
@@ -105,6 +266,17 @@ pub fn wrap_bn128(
     let mut pw = PartialWitness::new();
     pw.set_verifier_data_target(&verifier_circuit_target, &verifier_only_data)?;
     pw.set_proof_with_pis_target(&proof_with_pis_target, &proof_with_public_inputs)?;
+    // hash pub_statements using sha256
+    let pub_st: Vec<bStatement> = pub_statements
+        .iter()
+        .map(|st| bStatement::from(st.clone()))
+        .collect();
+    let podid_sha256 = calculate_id_alt(&pub_st, &pod_params);
+    // assign the hash value to the target
+    pw.set_hash_target(
+        podid_sha256_target,
+        HashOut::from_vec(podid_sha256.0.to_vec()),
+    )?;
 
     let vd = circuit_data.verifier_data();
     let proof = circuit_data.prove(pw)?;
@@ -227,6 +399,8 @@ mod tests {
             base_verifier_data.verifier_only,
             base_common_circuit_data,
             base_proof_with_pis,
+            &[], // TODO WIP
+            Params::default(),
         )?;
         println!(
             "[TIME] encapsulation proof (groth16-friendly) took: {:?}",
