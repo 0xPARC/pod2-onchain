@@ -36,7 +36,10 @@ use plonky2::{
 use pod2::{
     backends::plonky2::{
         basetypes::{Proof, C, D, F},
-        circuits::common::{Flattenable, StatementTarget},
+        circuits::{
+            common::{Flattenable, StatementTarget},
+            hash::{hash_from_state_circuit, precompute_hash_state},
+        },
         mainpod,
         mainpod::{pad_statement, statement::Statement as bStatement},
     },
@@ -67,7 +70,7 @@ pub fn prove_pod(
 
     let pod_proof: Proof = pod.pod.proof();
     let public_inputs = pod
-        .id()
+        .statements_hash()
         .to_fields(&pod.params)
         .iter()
         .chain(pod.pod.vd_set().root().0.iter())
@@ -98,16 +101,19 @@ pub fn prove_pod(
 
 // alternative calculate_id version, which instead of using Goldilocks Poseidon,
 // it uses sha256
-pub fn calculate_id_alt(statements: &[bStatement], params: &Params) -> pod2::middleware::Hash {
-    assert!(statements.len() <= params.num_public_statements_id);
-    assert!(params.max_public_statements <= params.num_public_statements_id);
+pub fn calculate_statements_hash_alt(
+    statements: &[bStatement],
+    params: &Params,
+) -> pod2::middleware::Hash {
+    assert!(statements.len() <= params.num_public_statements_hash);
+    assert!(params.max_public_statements <= params.num_public_statements_hash);
 
     let mut none_st: bStatement = pod2::middleware::Statement::None.into();
-    pod2::backends::plonky2::mainpod::pad_statement(params, &mut none_st);
+    pad_statement(params, &mut none_st);
     let statements_back_padded = statements
         .iter()
         .chain(std::iter::repeat(&none_st))
-        .take(params.num_public_statements_id)
+        .take(params.num_public_statements_hash)
         .collect_vec();
     let field_elems: Vec<F> = statements_back_padded
         .iter()
@@ -148,71 +154,21 @@ fn bytes_to_hash(b: Vec<u8>) -> pod2::middleware::Hash {
     pod2::middleware::Hash(v)
 }
 
-// TODO, NOTE: the calculate_id methods will need to be adapted to the latest pod2 version after
-// the PRs are merged:
-// - https://github.com/0xPARC/pod2/pull/397
-// - https://github.com/0xPARC/pod2/pull/394
-
-// TODO this method should be removed and just exposed in the pod2 library
-fn precompute_hash_state<F: RichField, P: PlonkyPermutation<F>>(inputs: &[F]) -> (P, &[F]) {
-    let (inputs, inputs_rem) = inputs.split_at((inputs.len() / P::RATE) * P::RATE);
-    let mut perm = P::new(core::iter::repeat(F::ZERO));
-
-    // Absorb all inputs up to the biggest multiple of RATE.
-    for input_chunk in inputs.chunks(P::RATE) {
-        perm.set_from_slice(input_chunk, 0);
-        perm.permute();
-    }
-
-    (perm, inputs_rem)
-}
-// TODO this method should be removed and just exposed in the pod2 library
-fn hash_from_state_circuit<H: AlgebraicHasher<F>, P: PlonkyPermutation<F>>(
-    builder: &mut CircuitBuilder<F, D>,
-    perm: P,
-    inputs: &[Target],
-) -> HashOutTarget {
-    let mut state =
-        H::AlgebraicPermutation::new(perm.as_ref().iter().map(|v| builder.constant(*v)));
-
-    // Absorb all input chunks.
-    for input_chunk in inputs.chunks(H::AlgebraicPermutation::RATE) {
-        // Overwrite the first r elements with the inputs. This differs from a standard sponge,
-        // where we would xor or add in the inputs. This is a well-known variant, though,
-        // sometimes called "overwrite mode".
-        state.set_from_slice(input_chunk, 0);
-        state = builder.permute::<H>(state);
-    }
-
-    let num_outputs = NUM_HASH_OUT_ELTS;
-    // Squeeze until we have the desired number of outputs.
-    let mut outputs = Vec::with_capacity(num_outputs);
-    loop {
-        for &s in state.squeeze() {
-            outputs.push(s);
-            if outputs.len() == num_outputs {
-                return HashOutTarget::from_vec(outputs);
-            }
-        }
-        state = builder.permute::<H>(state);
-    }
-}
-
 // alternative calculate_id_circuit version, which instead of using Goldilocks Poseidon,
 // it uses sha256
-fn calculate_id_circuit_alt(
+fn calculate_statements_hash_circuit(
     params: &Params,
     builder: &mut CircuitBuilder<F, D>,
     // These statements will be padded to reach `num_statements`
     statements: &[StatementTarget],
 ) -> HashOutTarget {
-    assert!(statements.len() <= params.num_public_statements_id);
+    assert!(statements.len() <= params.num_public_statements_hash);
 
     let statements_rev_flattened = statements.iter().rev().flat_map(|s| s.flatten());
     let mut none_st = mainpod::Statement::from(Statement::None);
     pad_statement(params, &mut none_st);
     let front_pad_elts = iter::repeat(&none_st)
-        .take(params.num_public_statements_id - statements.len())
+        .take(params.num_public_statements_hash - statements.len())
         .flat_map(|s| s.to_fields(params))
         .collect_vec();
     let (perm, front_pad_elts_rem) =
@@ -271,7 +227,7 @@ pub fn wrap_bn128(
         .iter()
         .map(|st| bStatement::from(st.clone()))
         .collect();
-    let podid_sha256 = calculate_id_alt(&pub_st, &pod_params);
+    let podid_sha256 = calculate_statements_hash_alt(&pub_st, &pod_params);
     // assign the hash value to the target
     pw.set_hash_target(
         podid_sha256_target,
@@ -315,32 +271,25 @@ mod tests {
     use plonky2::field::types::Field;
     use pod2::{
         backends::plonky2::{basetypes::DEFAULT_VD_SET, mainpod::Prover},
-        frontend::MainPodBuilder,
+        frontend::{MainPodBuilder, Operation},
         middleware::{containers::Set, Params},
-        op,
     };
 
     // returns a MainPod, example adapted from pod2/examples/main_pod_points.rs
     pub fn compute_pod_proof() -> Result<pod2::frontend::MainPod> {
         let params = Params {
-            max_input_signed_pods: 0,
+            max_input_pods: 0,
             ..Default::default()
         };
 
         let mut builder = MainPodBuilder::new(&params, &DEFAULT_VD_SET);
-        let set = [1, 2, 3].into_iter().map(|n| n.into()).collect();
-        let st = builder
-            .pub_op(op!(
-                new_entry,
-                "entry",
-                Set::new(params.max_merkle_proofs_containers, set).unwrap()
-            ))
-            .unwrap();
+        let set_entries = [1, 2, 3].into_iter().map(|n| n.into()).collect();
+        let set = Set::new(10, set_entries)?;
 
-        builder.pub_op(op!(set_contains, st, 1))?;
+        builder.pub_op(Operation::set_contains(set, 1))?;
 
         let prover = Prover {};
-        let pod = builder.prove(&prover, &params).unwrap();
+        let pod = builder.prove(&prover).unwrap();
         Ok(pod)
     }
 

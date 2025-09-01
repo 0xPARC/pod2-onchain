@@ -14,8 +14,10 @@ clap = { version = "4.0", features = ["derive"] }
 # uses custom plonky2 & pod2 branches:
 # - plonky2: with serialization of VerifierOnlyCircuitData
 # - pod2: version without EC related extra custom gates
-plonky2 = { git = "https://github.com/0xPARC/plonky2", branch="deserialize-verifieronlycircuitdata" }
-pod2 = { git="https://github.com/0xPARC/pod2", branch="tmp_disable_extra_customgates" }
+plonky2 = { git = "https://github.com/0xPARC/plonky2.git", rev = "3defd60532c8693cf5e9d2e6a8412c77ca58760f" }
+# plonky2 = { git = "https://github.com/0xPARC/plonky2", branch="deserialize-verifieronlycircuitdata" }
+# pod2 = { git="https://github.com/0xPARC/pod2", branch="tmp_disable_extra_customgates" }
+pod2 = { path = "../pod2_edu_and_ahmad" }
 
 # dependencies for the wrapper
 ff = { package = "ff", version = "0.13", features = ["derive"] }
@@ -24,6 +26,10 @@ num-bigint = { version = "0.4", features = ["rand"] }
 lazy_static = "1.4.0"
 sha2          = "0.10"
 #plonky2_sha256 = {git = "https://github.com/Weobe/plonky2-sha256.git"}
+
+
+[patch."https://github.com/0xPARC/plonky2"]
+plonky2 = { path = "../plonky2_deserialize_verifieronlydata/plonky2" }
 
 [features]
 default = []
