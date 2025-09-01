@@ -37,11 +37,12 @@ use pod2::{
     backends::plonky2::{
         basetypes::{Proof, C, D, F},
         circuits::{
-            common::{Flattenable, StatementTarget},
+            common::{CircuitBuilderPod, Flattenable, StatementTarget},
             hash::{hash_from_state_circuit, precompute_hash_state},
+            mainpod::calculate_statements_hash_circuit,
         },
         mainpod,
-        mainpod::{pad_statement, statement::Statement as bStatement},
+        mainpod::{calculate_statements_hash, pad_statement, statement::Statement as bStatement},
     },
     middleware::{Params, Statement, ToFields},
 };
@@ -88,7 +89,7 @@ pub fn prove_pod(
         pod_common_circuit_data,
         pod_proof_with_pis,
         &pod.public_statements,
-        pod.params,
+        &pod.params,
     )?;
     println!("[TIME] encapsulation proof took: {:?}", start.elapsed());
 
@@ -101,7 +102,7 @@ pub fn prove_pod(
 
 // alternative calculate_id version, which instead of using Goldilocks Poseidon,
 // it uses sha256
-pub fn calculate_statements_hash_alt(
+pub fn calculate_statements_hash_sha256(
     statements: &[bStatement],
     params: &Params,
 ) -> pod2::middleware::Hash {
@@ -156,7 +157,7 @@ fn bytes_to_hash(b: Vec<u8>) -> pod2::middleware::Hash {
 
 // alternative calculate_id_circuit version, which instead of using Goldilocks Poseidon,
 // it uses sha256
-fn calculate_statements_hash_circuit(
+fn calculate_statements_hash_circuit_sha256(
     params: &Params,
     builder: &mut CircuitBuilder<F, D>,
     // These statements will be padded to reach `num_statements`
@@ -164,9 +165,21 @@ fn calculate_statements_hash_circuit(
 ) -> HashOutTarget {
     assert!(statements.len() <= params.num_public_statements_hash);
 
-    let statements_rev_flattened = statements.iter().rev().flat_map(|s| s.flatten());
-    let mut none_st = mainpod::Statement::from(Statement::None);
-    pad_statement(params, &mut none_st);
+    let statements_rev_flattened: Vec<Target> =
+        statements.iter().rev().flat_map(|s| s.flatten()).collect();
+    // let mut none_st = mainpod::Statement::from(Statement::None);
+    // pad_statement(params, &mut none_st);
+
+    let statements_bytes: Vec<u8> = statements_rev_flattened
+        .iter()
+        .flat_map(|e| e.to_le_bytes())
+        .collect();
+    let msg_len_in_bits = (statements_bytes.len() * 8) as usize;
+    let sha256_targets = plonky2_sha256::circuit::make_circuits::<F, D>(builder, msg_len_in_bits);
+    todo!()
+
+    // WIP: instead of precompute poseidon & using poseidon, use sha256
+    /*
     let front_pad_elts = iter::repeat(&none_st)
         .take(params.num_public_statements_hash - statements.len())
         .flat_map(|s| s.to_fields(params))
@@ -174,7 +187,6 @@ fn calculate_statements_hash_circuit(
     let (perm, front_pad_elts_rem) =
         precompute_hash_state::<F, PoseidonPermutation<F>>(&front_pad_elts);
 
-    // WIP: instead of precompute poseidon & using poseidon, use sha256
     // Precompute the Poseidon state for the initial padding chunks
     let inputs = front_pad_elts_rem
         .iter()
@@ -183,8 +195,8 @@ fn calculate_statements_hash_circuit(
         .collect_vec();
     let id =
         hash_from_state_circuit::<PoseidonHash, PoseidonPermutation<F>>(builder, perm, &inputs);
-
     id
+    */
 }
 
 pub fn wrap_bn128(
@@ -192,7 +204,7 @@ pub fn wrap_bn128(
     common_circuit_data: CommonCircuitData<F, D>,
     proof_with_public_inputs: ProofWithPublicInputs<F, C, D>,
     pub_statements: &[Statement],
-    pod_params: Params,
+    pod_params: &Params,
 ) -> Result<(
     VerifierCircuitData<F, PoseidonBN128GoldilocksConfig, D>,
     CircuitData<F, PoseidonBN128GoldilocksConfig, D>,
@@ -202,7 +214,12 @@ pub fn wrap_bn128(
     let mut builder: CircuitBuilder<<PoseidonBN128GoldilocksConfig as GenericConfig<D>>::F, D> =
         CircuitBuilder::new(config);
 
-    // create circuit logic
+    // 1. create circuit logic, composed of:
+    // 1.a. verify pod proof
+    // 1.b. hash public statements with Poseidon and Sha256
+    //      and check that poseidon output matches the proof_with_pis.public_inputs first elements
+
+    // 1.a
     let proof_with_pis_target = builder.add_virtual_proof_with_pis(&common_circuit_data);
     let verifier_circuit_target = builder.constant_verifier_data(&verifier_only_data);
     builder.verify_proof::<C>(
@@ -210,28 +227,59 @@ pub fn wrap_bn128(
         &verifier_circuit_target,
         &common_circuit_data,
     );
+    // 1.b
+    let pub_statements_target: Vec<StatementTarget> = (0..pub_statements.len())
+        .map(|_| builder.add_virtual_statement(pod_params))
+        .collect();
+    let statements_poseidon_target =
+        calculate_statements_hash_circuit(pod_params, &mut builder, &pub_statements_target);
+    let statements_sha256_target =
+        calculate_statements_hash_circuit_sha256(pod_params, &mut builder, &pub_statements_target);
+    // ensure that `statements_poseidon_target` matches the `proof_with_pis_target.public_inputs[0]`
+    builder.connect_hashes(
+        statements_poseidon_target,
+        HashOutTarget::from_vec(proof_with_pis_target.public_inputs[0..4].to_vec()),
+    );
+
+    // 2. register public inputs
+    // register as public inputs the proof's public inputs
     builder.register_public_inputs(&proof_with_pis_target.public_inputs);
 
-    // register as public inputs the podid's sha256 hash version
-    let podid_sha256_target = builder.add_virtual_hash();
-    builder.register_public_inputs(&podid_sha256_target.elements);
+    // register as public inputs the statements sha256 hash version
+    // let statements_sha256_target = builder.add_virtual_hash();
+    builder.register_public_inputs(&statements_sha256_target.elements);
 
     let circuit_data = builder.build::<PoseidonBN128GoldilocksConfig>();
 
-    // set targets
+    // 3. set targets
     let mut pw = PartialWitness::new();
     pw.set_verifier_data_target(&verifier_circuit_target, &verifier_only_data)?;
     pw.set_proof_with_pis_target(&proof_with_pis_target, &proof_with_public_inputs)?;
+    // set the targets for the pub_statements_target
+    dbg!(pub_statements.len());
+    dbg!(pub_statements_target.len());
+    for (i, st) in pub_statements.iter().enumerate() {
+        pub_statements_target[i].set_targets(&mut pw, pod_params, &bStatement::from(st.clone()))?;
+    }
     // hash pub_statements using sha256
     let pub_st: Vec<bStatement> = pub_statements
         .iter()
         .map(|st| bStatement::from(st.clone()))
         .collect();
-    let podid_sha256 = calculate_statements_hash_alt(&pub_st, &pod_params);
-    // assign the hash value to the target
+    let statements_sha256 = calculate_statements_hash_sha256(&pub_st, &pod_params);
+    // assign the sha256 hash value to the target
     pw.set_hash_target(
-        podid_sha256_target,
-        HashOut::from_vec(podid_sha256.0.to_vec()),
+        statements_sha256_target,
+        HashOut::from_vec(statements_sha256.0.to_vec()),
+    )?;
+    // get poseidon's output from the pod's proof public inputs
+    let statements_poseidon: Vec<F> = proof_with_public_inputs.public_inputs[0..4].to_vec();
+    dbg!(&statements_sha256);
+    dbg!(&statements_poseidon);
+    // assign the posedion hash value to the respective target
+    pw.set_hash_target(
+        statements_poseidon_target,
+        HashOut::from_vec(statements_poseidon),
     )?;
 
     let vd = circuit_data.verifier_data();
@@ -333,6 +381,48 @@ mod tests {
         Ok((vd, cd, proof))
     }
 
+    #[test]
+    fn test_statements_sha256() -> Result<()> {
+        let pod_params = Params::default();
+
+        let local = pod2::dict!(32, {"a" => 3, "b" => 27}).unwrap();
+        let statements: Vec<Statement> = vec![
+            Statement::contains(local.clone(), "a", 3),
+            Statement::contains(local.clone(), "b", 27),
+        ];
+        let backend_statements: Vec<bStatement> = statements
+            .iter()
+            .map(|st| bStatement::from(st.clone()))
+            .collect();
+        let statements_sha256 = calculate_statements_hash_sha256(&backend_statements, &pod_params);
+
+        // circuit
+        let config = CircuitConfig::standard_recursion_config();
+        let mut builder = CircuitBuilder::<F, D>::new(config);
+
+        let statements_target: Vec<StatementTarget> = (0..statements.len())
+            .map(|_| builder.add_virtual_statement(&pod_params))
+            .collect();
+        let statements_sha256_target =
+            calculate_statements_hash_circuit_sha256(&pod_params, &mut builder, &statements_target);
+        builder.register_public_inputs(&statements_sha256_target.elements);
+
+        let mut pw = PartialWitness::new();
+        pw.set_hash_target(
+            statements_sha256_target,
+            HashOut::from_vec(statements_sha256.0.to_vec()),
+        )?;
+
+        let data = builder.build::<C>();
+
+        let proof_with_pis = data.prove(pw)?;
+        let vd = data.verifier_data();
+
+        vd.verify(proof_with_pis);
+
+        Ok(())
+    }
+
     // this test exists to be able to generate a quick proof (<1s) instead of
     // the full POD proof.
     #[test]
@@ -349,7 +439,7 @@ mod tests {
             base_common_circuit_data,
             base_proof_with_pis,
             &[], // TODO WIP
-            Params::default(),
+            &Params::default(),
         )?;
         println!(
             "[TIME] encapsulation proof (groth16-friendly) took: {:?}",

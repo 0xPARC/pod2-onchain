@@ -25,7 +25,7 @@ num = { version = "0.4", default-features = false }
 num-bigint = { version = "0.4", features = ["rand"] }
 lazy_static = "1.4.0"
 sha2          = "0.10"
-#plonky2_sha256 = {git = "https://github.com/Weobe/plonky2-sha256.git"}
+plonky2_sha256 = {git = "https://github.com/Weobe/plonky2-sha256.git"}
 
 
 [patch."https://github.com/0xPARC/plonky2"]
