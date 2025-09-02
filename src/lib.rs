@@ -18,7 +18,8 @@ use plonky2::{
         poseidon::PoseidonPermutation,
     },
     iop::{
-        target::Target,
+        ext_target::{unflatten_target, ExtensionTarget},
+        target::{BoolTarget, Target},
         witness::{PartialWitness, WitnessWrite},
     },
     plonk::config::GenericConfig,
@@ -155,50 +156,6 @@ fn bytes_to_hash(b: Vec<u8>) -> pod2::middleware::Hash {
     pod2::middleware::Hash(v)
 }
 
-// alternative calculate_id_circuit version, which instead of using Goldilocks Poseidon,
-// it uses sha256
-fn calculate_statements_hash_circuit_sha256(
-    params: &Params,
-    builder: &mut CircuitBuilder<F, D>,
-    // These statements will be padded to reach `num_statements`
-    statements: &[StatementTarget],
-) -> HashOutTarget {
-    assert!(statements.len() <= params.num_public_statements_hash);
-
-    let statements_rev_flattened: Vec<Target> =
-        statements.iter().rev().flat_map(|s| s.flatten()).collect();
-    // let mut none_st = mainpod::Statement::from(Statement::None);
-    // pad_statement(params, &mut none_st);
-
-    let statements_bytes: Vec<u8> = statements_rev_flattened
-        .iter()
-        .flat_map(|e| e.to_le_bytes())
-        .collect();
-    let msg_len_in_bits = (statements_bytes.len() * 8) as usize;
-    let sha256_targets = plonky2_sha256::circuit::make_circuits::<F, D>(builder, msg_len_in_bits);
-    todo!()
-
-    // WIP: instead of precompute poseidon & using poseidon, use sha256
-    /*
-    let front_pad_elts = iter::repeat(&none_st)
-        .take(params.num_public_statements_hash - statements.len())
-        .flat_map(|s| s.to_fields(params))
-        .collect_vec();
-    let (perm, front_pad_elts_rem) =
-        precompute_hash_state::<F, PoseidonPermutation<F>>(&front_pad_elts);
-
-    // Precompute the Poseidon state for the initial padding chunks
-    let inputs = front_pad_elts_rem
-        .iter()
-        .map(|v| builder.constant(*v))
-        .chain(statements_rev_flattened)
-        .collect_vec();
-    let id =
-        hash_from_state_circuit::<PoseidonHash, PoseidonPermutation<F>>(builder, perm, &inputs);
-    id
-    */
-}
-
 pub fn wrap_bn128(
     verifier_only_data: VerifierOnlyCircuitData<C, D>,
     common_circuit_data: CommonCircuitData<F, D>,
@@ -218,6 +175,7 @@ pub fn wrap_bn128(
     // 1.a. verify pod proof
     // 1.b. hash public statements with Poseidon and Sha256
     //      and check that poseidon output matches the proof_with_pis.public_inputs first elements
+    //   For the hashing, we use the approach described at https://eprint.iacr.org/2025/1500
 
     // 1.a
     let proof_with_pis_target = builder.add_virtual_proof_with_pis(&common_circuit_data);
@@ -231,23 +189,53 @@ pub fn wrap_bn128(
     let pub_statements_target: Vec<StatementTarget> = (0..pub_statements.len())
         .map(|_| builder.add_virtual_statement(pod_params))
         .collect();
+    // beta = poseidon(statements)
     let statements_poseidon_target =
         calculate_statements_hash_circuit(pod_params, &mut builder, &pub_statements_target);
-    let statements_sha256_target =
-        calculate_statements_hash_circuit_sha256(pod_params, &mut builder, &pub_statements_target);
-    // ensure that `statements_poseidon_target` matches the `proof_with_pis_target.public_inputs[0]`
+
+    // ensure that `statements_poseidon_target` matches the given `proof_with_pis_target.public_inputs[0]`
     builder.connect_hashes(
         statements_poseidon_target,
         HashOutTarget::from_vec(proof_with_pis_target.public_inputs[0..4].to_vec()),
     );
 
-    // 2. register public inputs
+    let statements_sha256_target = builder.add_virtual_hash();
+    // set alpha & beta to the sum of the elements of original alptha & beta respectively
+    let alpha_ext_target: ExtensionTarget<D> =
+        ExtensionTarget::<D>::try_from(statements_sha256_target.elements[0..2].to_vec()).unwrap();
+    let beta_ext_target: ExtensionTarget<D> =
+        ExtensionTarget::<D>::try_from(statements_poseidon_target.elements[0..2].to_vec()).unwrap();
+    let sigma_ext_target: ExtensionTarget<D> =
+        builder.add_extension(alpha_ext_target, beta_ext_target);
+
+    // TODO: note: the statement.flatten() is already computed in the pod2's
+    // `calculate_statements_hash_circuit` gadget
+    let statements_rev_flattened: Vec<Target> = pub_statements_target
+        .iter()
+        .rev()
+        .flat_map(|s| s.flatten())
+        .collect();
+    let statements_extension = unflatten_target::<D>(&statements_rev_flattened);
+    // compute gamma = UHF(sigma, statements) = \sum st_i * sigma^i
+    let mut gamma_ext_target: ExtensionTarget<D> =
+        statements_extension[statements_extension.len() - 1];
+    for st_e in statements_extension.iter().rev().skip(1) {
+        gamma_ext_target = builder.mul_add_extension(gamma_ext_target, sigma_ext_target, *st_e);
+    }
+
+    // 2. register public inputs, layout:
+    // 0..4: poseidon hash (original pod2's pub statements hash)
+    // 4..8: vdset.root
+    // 8..12: sha256 hash
+    // 12..14: gamma
+
     // register as public inputs the proof's public inputs
     builder.register_public_inputs(&proof_with_pis_target.public_inputs);
-
-    // register as public inputs the statements sha256 hash version
-    // let statements_sha256_target = builder.add_virtual_hash();
+    // register as public inputs the sha256 hash of the pub statements, and the gamma
     builder.register_public_inputs(&statements_sha256_target.elements);
+    builder.register_public_inputs(&gamma_ext_target.0);
+    // Note: statements_poseidon_target is already registered as a public input
+    // inside the proof_with_pis_target.public_inputs[0..4]
 
     let circuit_data = builder.build::<PoseidonBN128GoldilocksConfig>();
 
@@ -256,8 +244,6 @@ pub fn wrap_bn128(
     pw.set_verifier_data_target(&verifier_circuit_target, &verifier_only_data)?;
     pw.set_proof_with_pis_target(&proof_with_pis_target, &proof_with_public_inputs)?;
     // set the targets for the pub_statements_target
-    dbg!(pub_statements.len());
-    dbg!(pub_statements_target.len());
     for (i, st) in pub_statements.iter().enumerate() {
         pub_statements_target[i].set_targets(&mut pw, pod_params, &bStatement::from(st.clone()))?;
     }
@@ -274,8 +260,6 @@ pub fn wrap_bn128(
     )?;
     // get poseidon's output from the pod's proof public inputs
     let statements_poseidon: Vec<F> = proof_with_public_inputs.public_inputs[0..4].to_vec();
-    dbg!(&statements_sha256);
-    dbg!(&statements_poseidon);
     // assign the posedion hash value to the respective target
     pw.set_hash_target(
         statements_poseidon_target,
@@ -381,48 +365,6 @@ mod tests {
         Ok((vd, cd, proof))
     }
 
-    #[test]
-    fn test_statements_sha256() -> Result<()> {
-        let pod_params = Params::default();
-
-        let local = pod2::dict!(32, {"a" => 3, "b" => 27}).unwrap();
-        let statements: Vec<Statement> = vec![
-            Statement::contains(local.clone(), "a", 3),
-            Statement::contains(local.clone(), "b", 27),
-        ];
-        let backend_statements: Vec<bStatement> = statements
-            .iter()
-            .map(|st| bStatement::from(st.clone()))
-            .collect();
-        let statements_sha256 = calculate_statements_hash_sha256(&backend_statements, &pod_params);
-
-        // circuit
-        let config = CircuitConfig::standard_recursion_config();
-        let mut builder = CircuitBuilder::<F, D>::new(config);
-
-        let statements_target: Vec<StatementTarget> = (0..statements.len())
-            .map(|_| builder.add_virtual_statement(&pod_params))
-            .collect();
-        let statements_sha256_target =
-            calculate_statements_hash_circuit_sha256(&pod_params, &mut builder, &statements_target);
-        builder.register_public_inputs(&statements_sha256_target.elements);
-
-        let mut pw = PartialWitness::new();
-        pw.set_hash_target(
-            statements_sha256_target,
-            HashOut::from_vec(statements_sha256.0.to_vec()),
-        )?;
-
-        let data = builder.build::<C>();
-
-        let proof_with_pis = data.prove(pw)?;
-        let vd = data.verifier_data();
-
-        vd.verify(proof_with_pis);
-
-        Ok(())
-    }
-
     // this test exists to be able to generate a quick proof (<1s) instead of
     // the full POD proof.
     #[test]
@@ -477,6 +419,13 @@ mod tests {
             "[TIME] plonky2 proof (groth16-friendly) took: {:?}",
             start.elapsed()
         );
+        let p = proof_with_pis.public_inputs.clone();
+        println!("public inputs:");
+        println!("statements poseidon hash: {:?}", p[0..4].to_vec());
+        println!("vdset.root: {:?}", p[4..8].to_vec());
+        println!("statements sha256 hash: {:?}", p[8..12].to_vec());
+        println!("gamma: {:?}", p[12..14].to_vec());
+        assert_eq!(p.len(), 14);
 
         // step 3) store the files
         store_files(
