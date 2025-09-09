@@ -2,7 +2,6 @@ use anyhow::Result;
 use itertools::Itertools;
 use std::fs;
 use std::io::Write;
-use std::iter;
 use std::ops::Deref;
 use std::path::Path;
 use std::time::Instant;
