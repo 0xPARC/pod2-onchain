@@ -159,7 +159,7 @@ pub fn wrap_bn128(
     //   matches the proof_with_pis.public_inputs first elements
     //
     //   For the hashing of the public inputs, we use the approach described at
-    //   https://eprint.iacr.org/2025/1500 and and https://eprint.iacr.org/2024/2099 section 4.2.1.
+    //   https://eprint.iacr.org/2025/1500 and https://eprint.iacr.org/2024/2099 section 4.2.1.
 
     // 1.a
     let proof_with_pis_target = builder.add_virtual_proof_with_pis(&common_circuit_data);
@@ -177,14 +177,17 @@ pub fn wrap_bn128(
     let statements_poseidon_target =
         calculate_statements_hash_circuit(pod_params, &mut builder, &pub_statements_target);
 
-    // ensure that `statements_poseidon_target` matches the given `proof_with_pis_target.public_inputs[0]`
+    // ensure that `statements_poseidon_target` matches the given
+    // `proof_with_pis_target.public_inputs[0..4]`, which contains the poseidon
+    // hash of the pod2's pub statements
     builder.connect_hashes(
         statements_poseidon_target,
         HashOutTarget::from_vec(proof_with_pis_target.public_inputs[0..4].to_vec()),
     );
 
     let statements_sha256_target = builder.add_virtual_hash();
-    // set alpha & beta to the sum of the elements of original alptha & beta respectively
+    // set alpha & beta to the sum of the elements of original alptha & beta
+    // respectively
     let alpha_ext_target: ExtensionTarget<D> =
         ExtensionTarget::<D>::try_from(statements_sha256_target.elements[0..2].to_vec()).unwrap();
     let beta_ext_target: ExtensionTarget<D> =
@@ -216,7 +219,8 @@ pub fn wrap_bn128(
 
     // register as public inputs the proof's public inputs
     builder.register_public_inputs(&proof_with_pis_target.public_inputs);
-    // register as public inputs the sha256 hash of the pub statements, and the gamma
+    // register as public inputs the sha256 hash of the pub statements, and the
+    // gamma
     builder.register_public_inputs(&statements_sha256_target.elements);
     builder.register_public_inputs(&gamma_ext_target.0);
     // Note: statements_poseidon_target is already registered as a public input
@@ -314,82 +318,6 @@ mod tests {
         let prover = Prover {};
         let pod = builder.prove(&prover).unwrap();
         Ok(pod)
-    }
-
-    // simple circuit that computes few iterations of the Fibonacci sequence
-    pub fn simple_circuit() -> Result<(
-        VerifierCircuitData<F, C, D>,
-        CommonCircuitData<F, D>,
-        ProofWithPublicInputs<F, C, D>,
-    )> {
-        let config = CircuitConfig::standard_recursion_config();
-        let mut builder = CircuitBuilder::<F, D>::new(config);
-
-        // the arithmetic circuit.
-        let initial_a = builder.add_virtual_target();
-        let initial_b = builder.add_virtual_target();
-        let mut prev_target = initial_a;
-        let mut cur_target = initial_b;
-        for _ in 0..99 {
-            let temp = builder.add(prev_target, cur_target);
-            prev_target = cur_target;
-            cur_target = temp;
-        }
-
-        // public inputs are the two initial values (provided below) and the
-        // result (which is generated).
-        builder.register_public_input(initial_a);
-        builder.register_public_input(initial_b);
-        builder.register_public_input(cur_target);
-
-        // provide initial values.
-        let mut pw = PartialWitness::new();
-        pw.set_target(initial_a, F::ZERO)?;
-        pw.set_target(initial_b, F::ONE)?;
-
-        let data = builder.build::<C>();
-
-        let proof = data.prove(pw)?;
-        let vd = data.verifier_data();
-        let cd = vd.common.clone();
-
-        Ok((vd, cd, proof))
-    }
-
-    // this test exists to be able to generate a quick proof (<1s) instead of
-    // the full POD proof.
-    #[test]
-    fn test_simple_proof_flow() -> Result<()> {
-        // fibonacci proof
-        let start = Instant::now();
-        let (base_verifier_data, base_common_circuit_data, base_proof_with_pis) = simple_circuit()?;
-        println!("[TIME] base proof took: {:?}", start.elapsed());
-
-        // generate new plonky2 proof
-        let start = Instant::now();
-        let (verifier_data, common_circuit_data, proof_with_pis) = wrap_bn128(
-            base_verifier_data.verifier_only,
-            base_common_circuit_data,
-            base_proof_with_pis,
-            &[], // not used in this test
-            &Params::default(),
-        )?;
-        println!(
-            "[TIME] encapsulation proof (groth16-friendly) took: {:?}",
-            start.elapsed()
-        );
-
-        // sanity check: verify proof
-        verifier_data.verify(proof_with_pis.clone())?;
-
-        store_files(
-            Path::new("testdata/simple_proof"),
-            verifier_data.verifier_only,
-            common_circuit_data,
-            proof_with_pis,
-        )?;
-
-        Ok(())
     }
 
     #[test]
