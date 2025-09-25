@@ -15,7 +15,6 @@ For an example on how to use the rust lib, check the test [`test_pod_flow`](http
 
 ![](pod2-onchain-diagram.png)
 
-For the public inputs onchain verification, we use the approach described at https://eprint.iacr.org/2025/1500 and https://eprint.iacr.org/2024/2099 section 4.2.1.
 
 ## Benchmarks
 
@@ -39,3 +38,4 @@ This repo relies on the following projects:
 - Pod2: https://github.com/0xPARC/pod2
 - Gnark: https://github.com/Consensys/gnark
 - Gnark plonky2 verifier: https://github.com/succinctlabs/gnark-plonky2-verifier
+- For the public inputs onchain verification, we use the approach described at https://eprint.iacr.org/2025/1500 and https://eprint.iacr.org/2024/2099 section 4.2.1.
