@@ -88,6 +88,8 @@ pub fn prove_pod(
     // sanity check: verify proof
     verifier_data.verify(proof_with_pis.clone())?;
 
+    debug_assert_eq!(proof_with_pis.public_inputs.len(), 14); // poseidon + vdset_root + sha256 + gamma
+
     Ok((verifier_data, common_circuit_data, proof_with_pis))
 }
 

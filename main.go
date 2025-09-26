@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"time"
 
@@ -40,57 +41,99 @@ func main() {
 	ts := flag.Bool("t", false, "enable the generation of a new Trusted Setup (includes generating the R1CS and the Solidity verifier)")
 	prove := flag.Bool("p", false, "enable the generation a Groth16 proof")
 	solidityCheck := flag.Bool("s", false, "enable solidity verification check")
+	verifyProof := flag.Bool("v", false, "run a proof verification")
 
-	tsPath := flag.String("a", "outputs", "dir of the artifacts (trusted setup, r1cs, solidity)")
-	plonky2Circuit := flag.String("c", "pod", "dir of the plonky2 circuit to use")
+	outputsPath := flag.String("o", "outputs", "dir of the artifacts (trusted setup, r1cs, solidity)")
+	inputsPath := flag.String("i", "testdata/pod", "dir of the plonky2 circuit to use")
 
 	flag.Parse()
 
+	if *verifyProof {
+		fmt.Println("verifying proof")
+		// load proof
+		proof := groth16.NewProof(bn254.ID)
+		proofBuf, err := os.ReadFile(filepath.Join(*outputsPath, "proof.proof"))
+		checkErr(err)
+		_, err = proof.ReadFrom(bytes.NewBuffer(proofBuf))
+		checkErr(err)
+
+		// load public inputs (public witness)
+		witnessPublic, err := witness.New(ecc.BN254.ScalarField())
+		checkErr(err)
+		witnessPublicBuf, err := os.ReadFile(filepath.Join(*outputsPath, "witness.public"))
+		checkErr(err)
+		_, err = witnessPublic.ReadFrom(bytes.NewBuffer(witnessPublicBuf))
+		checkErr(err)
+		fmt.Println("public inputs:", witnessPublic)
+
+		// load vk
+		fmt.Println("load vk")
+		start := time.Now()
+		vk := groth16.NewVerifyingKey(bn254.ID)
+		vkBuf, err := os.ReadFile(filepath.Join(*outputsPath, "verifying.key"))
+		checkErr(err)
+		_, err = vk.ReadFrom(bytes.NewBuffer(vkBuf))
+		checkErr(err)
+		fmt.Println("[DBG] loading pk & vk took:", time.Since(start).Milliseconds())
+
+		err = groth16.Verify(proof, vk, witnessPublic, backend.WithVerifierHashToFieldFunction(sha3.NewLegacyKeccak256()))
+		checkErr(err)
+
+		fmt.Println("verification success!")
+		os.Exit(0)
+	}
+
 	fmt.Println("\n=====\npod2-onchain prover\n=====")
 	fmt.Printf("Usage: 'go run main.go -h' for complete list of flags.\n\n")
-	fmt.Printf("trusted setup path: %s\n", *tsPath)
+	fmt.Printf("outputs path: %s\n", *outputsPath)
 	fmt.Println("Trusted Setup generation:", *ts)
 	fmt.Println("Groth16 proof generation:", *prove)
 	fmt.Println("Solidity verification check:", *solidityCheck)
 
-	commonCircuitData := types.ReadCommonCircuitData("testdata/" + *plonky2Circuit + "/common_circuit_data.json")
+	commonCircuitData := types.ReadCommonCircuitData(filepath.Join(*inputsPath, "common_circuit_data.json"))
 
-	proofWithPis := variables.DeserializeProofWithPublicInputs(types.ReadProofWithPublicInputs("testdata/" + *plonky2Circuit + "/proof_with_public_inputs.json"))
-	verifierOnlyCircuitData := variables.DeserializeVerifierOnlyCircuitData(types.ReadVerifierOnlyCircuitData("testdata/" + *plonky2Circuit + "/verifier_only_circuit_data.json"))
+	proofWithPis := variables.DeserializeProofWithPublicInputs(types.ReadProofWithPublicInputs(filepath.Join(*inputsPath, "proof_with_public_inputs.json")))
+	verifierOnlyCircuitData := variables.DeserializeVerifierOnlyCircuitData(types.ReadVerifierOnlyCircuitData(filepath.Join(*inputsPath, "verifier_only_circuit_data.json")))
 
-	_ = os.Mkdir("outputs", os.ModePerm)
+	_ = os.Mkdir(*outputsPath, os.ModePerm)
 
 	if *ts {
 		fmt.Println("build r1cs circuit")
-		r1cs := r1csCircuit(proofWithPis, verifierOnlyCircuitData, commonCircuitData)
+		r1cs := r1csCircuit(proofWithPis, verifierOnlyCircuitData, commonCircuitData, *outputsPath)
 
 		fmt.Println("gen ts")
-		_, _ = trustedSetup(r1cs)
+		_, _ = trustedSetup(r1cs, *outputsPath)
 	}
 	if *prove {
 		fmt.Println("load R1CS")
 		r1cs := groth16.NewCS(bn254.ID)
-		r1csBuf, err := os.ReadFile("outputs/r1cs")
+		r1csBuf, err := os.ReadFile(filepath.Join(*outputsPath, "r1cs"))
 		checkErr(err)
 		_, err = r1cs.ReadFrom(bytes.NewBuffer(r1csBuf))
 		checkErr(err)
 
 		fmt.Println("load pk & vk")
+		start := time.Now()
 		pk := groth16.NewProvingKey(bn254.ID)
 		vk := groth16.NewVerifyingKey(bn254.ID)
-		pkBuf, err := os.ReadFile("outputs/proving.key")
+		pkBuf, err := os.ReadFile(filepath.Join(*outputsPath, "proving.key"))
 		checkErr(err)
 		_, err = pk.ReadFrom(bytes.NewBuffer(pkBuf))
 		checkErr(err)
-		vkBuf, err := os.ReadFile("outputs/verifying.key")
+		vkBuf, err := os.ReadFile(filepath.Join(*outputsPath, "verifying.key"))
 		checkErr(err)
 		_, err = vk.ReadFrom(bytes.NewBuffer(vkBuf))
 		checkErr(err)
-		groth16Proof(r1cs, *plonky2Circuit, pk, vk, *solidityCheck)
+		fmt.Println("[DBG] loading pk & vk took:", time.Since(start).Milliseconds())
+
+		fmt.Println("generate Groth16 proof")
+		start = time.Now()
+		groth16Proof(r1cs, pk, vk, *inputsPath, *outputsPath, *solidityCheck)
+		fmt.Println("[DBG] generating Groth16 proof took:", time.Since(start).Milliseconds())
 	}
 }
 
-func r1csCircuit(proofWithPis variables.ProofWithPublicInputs, verifierOnlyCircuitData variables.VerifierOnlyCircuitData, commonCircuitData types.CommonCircuitData) constraint.ConstraintSystem {
+func r1csCircuit(proofWithPis variables.ProofWithPublicInputs, verifierOnlyCircuitData variables.VerifierOnlyCircuitData, commonCircuitData types.CommonCircuitData, outputsPath string) constraint.ConstraintSystem {
 	circuit := verifier.ExampleVerifierCircuit{
 		Proof:                   proofWithPis.Proof,
 		PublicInputs:            proofWithPis.PublicInputs,
@@ -116,7 +159,7 @@ func r1csCircuit(proofWithPis variables.ProofWithPublicInputs, verifierOnlyCircu
 	println("r1cs.GetNbInternalVariables(): ", r1cs.GetNbInternalVariables())
 
 	// store r1cs into a file
-	fR1CS, err := os.Create("outputs/r1cs")
+	fR1CS, err := os.Create(filepath.Join(outputsPath, "r1cs"))
 	checkErr(err)
 	r1cs.WriteTo(fR1CS)
 	fR1CS.Close()
@@ -124,7 +167,7 @@ func r1csCircuit(proofWithPis variables.ProofWithPublicInputs, verifierOnlyCircu
 	return r1cs
 }
 
-func trustedSetup(r1cs constraint.ConstraintSystem) (groth16.ProvingKey, groth16.VerifyingKey) {
+func trustedSetup(r1cs constraint.ConstraintSystem, outputsPath string) (groth16.ProvingKey, groth16.VerifyingKey) {
 	var pk groth16.ProvingKey
 	var vk groth16.VerifyingKey
 	var err error
@@ -133,20 +176,20 @@ func trustedSetup(r1cs constraint.ConstraintSystem) (groth16.ProvingKey, groth16
 	pk, vk, err = groth16.Setup(r1cs)
 	checkErr(err)
 
-	fPK, err := os.Create("outputs/proving.key")
+	fPK, err := os.Create(filepath.Join(outputsPath, "proving.key"))
 	checkErr(err)
 	pk.WriteTo(fPK)
 	fPK.Close()
 
 	if vk != nil {
-		fVK, err := os.Create("outputs/verifying.key")
+		fVK, err := os.Create(filepath.Join(outputsPath, "verifying.key"))
 		checkErr(err)
 		vk.WriteTo(fVK)
 		fVK.Close()
 	}
 
 	// write solidity smart contract into a file
-	fSolidity, err := os.Create("outputs/Verifier.sol")
+	fSolidity, err := os.Create(filepath.Join(outputsPath, "Verifier.sol"))
 	checkErr(err)
 	// use keccak256 (ethereum version) as hashtofield
 	err = vk.ExportSolidity(fSolidity, solidity.WithHashToFieldFunction(sha3.NewLegacyKeccak256()))
@@ -156,11 +199,11 @@ func trustedSetup(r1cs constraint.ConstraintSystem) (groth16.ProvingKey, groth16
 	return pk, vk
 }
 
-func groth16Proof(r1cs constraint.ConstraintSystem, circuitName string, pk groth16.ProvingKey, vk groth16.VerifyingKey, solidityCheck bool) {
+func groth16Proof(r1cs constraint.ConstraintSystem, pk groth16.ProvingKey, vk groth16.VerifyingKey, inputsPath string, outputsPath string, solidityCheck bool) {
 	var err error
 
-	proofWithPis := variables.DeserializeProofWithPublicInputs(types.ReadProofWithPublicInputs("testdata/" + circuitName + "/proof_with_public_inputs.json"))
-	verifierOnlyCircuitData := variables.DeserializeVerifierOnlyCircuitData(types.ReadVerifierOnlyCircuitData("testdata/" + circuitName + "/verifier_only_circuit_data.json"))
+	proofWithPis := variables.DeserializeProofWithPublicInputs(types.ReadProofWithPublicInputs(filepath.Join(inputsPath, "proof_with_public_inputs.json")))
+	verifierOnlyCircuitData := variables.DeserializeVerifierOnlyCircuitData(types.ReadVerifierOnlyCircuitData(filepath.Join(inputsPath, "verifier_only_circuit_data.json")))
 	assignment := verifier.ExampleVerifierCircuit{
 		Proof:                   proofWithPis.Proof,
 		PublicInputs:            proofWithPis.PublicInputs,
@@ -181,7 +224,13 @@ func groth16Proof(r1cs constraint.ConstraintSystem, circuitName string, pk groth
 	checkErr(err)
 	fmt.Println("[public witness]:", string(witnessPublicJSON))
 
-	fWitness, err := os.Create("outputs/witness")
+	// store witnessPublic in a file
+	fWitnessPublic, err := os.Create(filepath.Join(outputsPath, "witness.public"))
+	checkErr(err)
+	witnessPublic.WriteTo(fWitnessPublic)
+	fWitnessPublic.Close()
+
+	fWitness, err := os.Create(filepath.Join(outputsPath, "witness"))
 	checkErr(err)
 	witness.WriteTo(fWitness)
 	fWitness.Close()
@@ -192,7 +241,7 @@ func groth16Proof(r1cs constraint.ConstraintSystem, circuitName string, pk groth
 	proof, err := groth16.Prove(r1cs, pk, witness, backend.WithProverHashToFieldFunction(sha3.NewLegacyKeccak256()))
 	checkErr(err)
 	fmt.Println("[DBG] proof gen", time.Since(start).Milliseconds())
-	fProof, err := os.Create("outputs/proof.proof")
+	fProof, err := os.Create(filepath.Join(outputsPath, "proof.proof"))
 	checkErr(err)
 	proof.WriteTo(fProof)
 	fProof.Close()
@@ -254,7 +303,7 @@ func groth16Proof(r1cs constraint.ConstraintSystem, circuitName string, pk groth
 	if solidityCheck {
 		if _vk, ok := vk.(solidity.VerifyingKey); ok {
 			fmt.Println("VERIFY solidity")
-			solidityVerification(_vk, proof, witnessPublic, []solidity.ExportOption{solidity.WithHashToFieldFunction(sha3.NewLegacyKeccak256())})
+			solidityVerification(_vk, proof, witnessPublic, outputsPath, []solidity.ExportOption{solidity.WithHashToFieldFunction(sha3.NewLegacyKeccak256())})
 		}
 	}
 }
@@ -263,13 +312,14 @@ func groth16Proof(r1cs constraint.ConstraintSystem, circuitName string, pk groth
 func solidityVerification(vk solidity.VerifyingKey,
 	proof any,
 	validPublicWitness witness.Witness,
+	outputsPath string,
 	opts []solidity.ExportOption,
 ) {
 	// make dir
-	_ = os.Mkdir("outputs/solidity", os.ModePerm)
+	_ = os.Mkdir(filepath.Join(outputsPath, "solidity"), os.ModePerm)
 
 	// export solidity contract
-	fSolidity, err := os.Create("outputs/solidity/gnark_verifier.sol")
+	fSolidity, err := os.Create(filepath.Join(outputsPath, "solidity/gnark_verifier.sol"))
 	checkErr(err)
 
 	err = vk.ExportSolidity(fSolidity, opts...)
@@ -280,7 +330,7 @@ func solidityVerification(vk solidity.VerifyingKey,
 
 	// generate assets
 	// gnark-solidity-checker generate --dir tmpdir --solidity contract_g16.sol
-	cmd := exec.Command("gnark-solidity-checker", "generate", "--dir", "outputs/solidity", "--solidity", "gnark_verifier.sol")
+	cmd := exec.Command("gnark-solidity-checker", "generate", "--dir", outputsPath+"/solidity", "--solidity", "gnark_verifier.sol")
 	fmt.Println("running ", cmd.String())
 	out, err := cmd.CombinedOutput()
 	checkErr(err, string(out))
@@ -312,7 +362,7 @@ func solidityVerification(vk solidity.VerifyingKey,
 	bPublicWitness = bPublicWitness[12:]
 	publicWitnessStr := hex.EncodeToString(bPublicWitness)
 
-	checkerOpts = append(checkerOpts, "--dir", "outputs/solidity")
+	checkerOpts = append(checkerOpts, "--dir", filepath.Join(outputsPath, "solidity"))
 	checkerOpts = append(checkerOpts, "--nb-public-inputs", strconv.Itoa(len(validPublicWitness.Vector().(fr_bn254.Vector))))
 	checkerOpts = append(checkerOpts, "--proof", proofStr)
 	checkerOpts = append(checkerOpts, "--public-inputs", publicWitnessStr)

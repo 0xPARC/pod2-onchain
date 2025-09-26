@@ -12,7 +12,7 @@ serde_json = "1.0.141"
 clap = { version = "4.0", features = ["derive"] }
 
 plonky2 = { git = "https://github.com/0xPARC/plonky2.git", rev = "767a098d89b8d50d8aacfdce0c0a7222e8760d37" }
-pod2 = { git="https://github.com/0xPARC/pod2", rev = "59ec06a72f658606a068755927fa751501f04ce5", default-features = false, features = ["backend_plonky2", "zk"]}
+pod2 = { git="https://github.com/0xPARC/pod2", rev = "352b1fdac1bdb476a8afa48e7fa3d70075ae563a", default-features = false, features = ["backend_plonky2", "zk"]}
 
 # dependencies for the wrapper
 ff = { package = "ff", version = "0.13", features = ["derive"] }
