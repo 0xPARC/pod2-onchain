@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/consensys/gnark-crypto/ecc"
+	"github.com/consensys/gnark-crypto/ecc/bn254"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
 	fr_bn254 "github.com/consensys/gnark-crypto/ecc/bn254/fr"
 	"github.com/consensys/gnark/backend"
@@ -36,11 +37,21 @@ func checkErr(err error, msg ...string) {
 }
 
 func main() {
-	fmt.Println("\n=====\npod2-onchain prover\n=====")
+	ts := flag.Bool("t", false, "enable the generation of a new Trusted Setup (includes generating the R1CS and the Solidity verifier)")
+	prove := flag.Bool("p", false, "enable the generation a Groth16 proof")
+	solidityCheck := flag.Bool("s", false, "enable solidity verification check")
 
-	plonky2Circuit := flag.String("plonky2-circuit", "pod", "name of the plonky2 circuit to benchmark")
-	profileCircuit := flag.Bool("profile", true, "profile the circuit")
+	tsPath := flag.String("a", "outputs", "dir of the artifacts (trusted setup, r1cs, solidity)")
+	plonky2Circuit := flag.String("c", "pod", "dir of the plonky2 circuit to use")
+
 	flag.Parse()
+
+	fmt.Println("\n=====\npod2-onchain prover\n=====")
+	fmt.Printf("Usage: 'go run main.go -h' for complete list of flags.\n\n")
+	fmt.Printf("trusted setup path: %s\n", *tsPath)
+	fmt.Println("Trusted Setup generation:", *ts)
+	fmt.Println("Groth16 proof generation:", *prove)
+	fmt.Println("Solidity verification check:", *solidityCheck)
 
 	commonCircuitData := types.ReadCommonCircuitData("testdata/" + *plonky2Circuit + "/common_circuit_data.json")
 
@@ -49,6 +60,37 @@ func main() {
 
 	_ = os.Mkdir("outputs", os.ModePerm)
 
+	if *ts {
+		fmt.Println("build r1cs circuit")
+		r1cs := r1csCircuit(proofWithPis, verifierOnlyCircuitData, commonCircuitData)
+
+		fmt.Println("gen ts")
+		_, _ = trustedSetup(r1cs)
+	}
+	if *prove {
+		fmt.Println("load R1CS")
+		r1cs := groth16.NewCS(bn254.ID)
+		r1csBuf, err := os.ReadFile("outputs/r1cs")
+		checkErr(err)
+		_, err = r1cs.ReadFrom(bytes.NewBuffer(r1csBuf))
+		checkErr(err)
+
+		fmt.Println("load pk & vk")
+		pk := groth16.NewProvingKey(bn254.ID)
+		vk := groth16.NewVerifyingKey(bn254.ID)
+		pkBuf, err := os.ReadFile("outputs/proving.key")
+		checkErr(err)
+		_, err = pk.ReadFrom(bytes.NewBuffer(pkBuf))
+		checkErr(err)
+		vkBuf, err := os.ReadFile("outputs/verifying.key")
+		checkErr(err)
+		_, err = vk.ReadFrom(bytes.NewBuffer(vkBuf))
+		checkErr(err)
+		groth16Proof(r1cs, *plonky2Circuit, pk, vk, *solidityCheck)
+	}
+}
+
+func r1csCircuit(proofWithPis variables.ProofWithPublicInputs, verifierOnlyCircuitData variables.VerifierOnlyCircuitData, commonCircuitData types.CommonCircuitData) constraint.ConstraintSystem {
 	circuit := verifier.ExampleVerifierCircuit{
 		Proof:                   proofWithPis.Proof,
 		PublicInputs:            proofWithPis.PublicInputs,
@@ -57,36 +99,64 @@ func main() {
 	}
 
 	var p *profile.Profile
-	if *profileCircuit {
-		p = profile.Start()
-	}
+	p = profile.Start()
 
 	var builder frontend.NewBuilder
 	builder = r1cs.NewBuilder
 
 	r1cs, err := frontend.Compile(ecc.BN254.ScalarField(), builder, &circuit)
-	if err != nil {
-		fmt.Println("error in building circuit", err)
-		os.Exit(1)
-	}
+	checkErr(err, "error in building circuit")
 
-	if *profileCircuit {
-		p.Stop()
-		p.Top()
-		println("r1cs.GetNbCoefficients(): ", r1cs.GetNbCoefficients())
-		println("r1cs.GetNbConstraints(): ", r1cs.GetNbConstraints())
-		println("r1cs.GetNbSecretVariables(): ", r1cs.GetNbSecretVariables())
-		println("r1cs.GetNbPublicVariables(): ", r1cs.GetNbPublicVariables())
-		println("r1cs.GetNbInternalVariables(): ", r1cs.GetNbInternalVariables())
-	}
+	p.Stop()
+	p.Top()
+	println("r1cs.GetNbCoefficients(): ", r1cs.GetNbCoefficients())
+	println("r1cs.GetNbConstraints(): ", r1cs.GetNbConstraints())
+	println("r1cs.GetNbSecretVariables(): ", r1cs.GetNbSecretVariables())
+	println("r1cs.GetNbPublicVariables(): ", r1cs.GetNbPublicVariables())
+	println("r1cs.GetNbInternalVariables(): ", r1cs.GetNbInternalVariables())
 
-	saveArtifacts := true
-	groth16Proof(r1cs, *plonky2Circuit, saveArtifacts)
+	// store r1cs into a file
+	fR1CS, err := os.Create("outputs/r1cs")
+	checkErr(err)
+	r1cs.WriteTo(fR1CS)
+	fR1CS.Close()
+
+	return r1cs
 }
 
-func groth16Proof(r1cs constraint.ConstraintSystem, circuitName string, saveArtifacts bool) {
+func trustedSetup(r1cs constraint.ConstraintSystem) (groth16.ProvingKey, groth16.VerifyingKey) {
 	var pk groth16.ProvingKey
 	var vk groth16.VerifyingKey
+	var err error
+
+	fmt.Println("Running circuit setup", time.Now())
+	pk, vk, err = groth16.Setup(r1cs)
+	checkErr(err)
+
+	fPK, err := os.Create("outputs/proving.key")
+	checkErr(err)
+	pk.WriteTo(fPK)
+	fPK.Close()
+
+	if vk != nil {
+		fVK, err := os.Create("outputs/verifying.key")
+		checkErr(err)
+		vk.WriteTo(fVK)
+		fVK.Close()
+	}
+
+	// write solidity smart contract into a file
+	fSolidity, err := os.Create("outputs/Verifier.sol")
+	checkErr(err)
+	// use keccak256 (ethereum version) as hashtofield
+	err = vk.ExportSolidity(fSolidity, solidity.WithHashToFieldFunction(sha3.NewLegacyKeccak256()))
+	checkErr(err)
+	fSolidity.Close()
+
+	return pk, vk
+}
+
+func groth16Proof(r1cs constraint.ConstraintSystem, circuitName string, pk groth16.ProvingKey, vk groth16.VerifyingKey, solidityCheck bool) {
 	var err error
 
 	proofWithPis := variables.DeserializeProofWithPublicInputs(types.ReadProofWithPublicInputs("testdata/" + circuitName + "/proof_with_public_inputs.json"))
@@ -95,32 +165,6 @@ func groth16Proof(r1cs constraint.ConstraintSystem, circuitName string, saveArti
 		Proof:                   proofWithPis.Proof,
 		PublicInputs:            proofWithPis.PublicInputs,
 		VerifierOnlyCircuitData: verifierOnlyCircuitData,
-	}
-
-	fmt.Println("Running circuit setup", time.Now())
-	pk, vk, err = groth16.Setup(r1cs)
-	checkErr(err)
-
-	if saveArtifacts {
-		fPK, err := os.Create("outputs/proving.key")
-		checkErr(err)
-		pk.WriteTo(fPK)
-		fPK.Close()
-
-		if vk != nil {
-			fVK, err := os.Create("outputs/verifying.key")
-			checkErr(err)
-			vk.WriteTo(fVK)
-			fVK.Close()
-		}
-
-		// write solidity smart contract into a file
-		fSolidity, err := os.Create("outputs/Verifier.sol")
-		checkErr(err)
-		// use keccak256 (ethereum version) as hashtofield
-		err = vk.ExportSolidity(fSolidity, solidity.WithHashToFieldFunction(sha3.NewLegacyKeccak256()))
-		checkErr(err)
-		fSolidity.Close()
 	}
 
 	fmt.Println("Generating witness", time.Now())
@@ -137,12 +181,10 @@ func groth16Proof(r1cs constraint.ConstraintSystem, circuitName string, saveArti
 	checkErr(err)
 	fmt.Println("[public witness]:", string(witnessPublicJSON))
 
-	if saveArtifacts {
-		fWitness, err := os.Create("outputs/witness")
-		checkErr(err)
-		witness.WriteTo(fWitness)
-		fWitness.Close()
-	}
+	fWitness, err := os.Create("outputs/witness")
+	checkErr(err)
+	witness.WriteTo(fWitness)
+	fWitness.Close()
 	fmt.Println("[DBG] witness gen", time.Since(start).Milliseconds())
 
 	fmt.Println("Creating proof", time.Now())
@@ -150,12 +192,10 @@ func groth16Proof(r1cs constraint.ConstraintSystem, circuitName string, saveArti
 	proof, err := groth16.Prove(r1cs, pk, witness, backend.WithProverHashToFieldFunction(sha3.NewLegacyKeccak256()))
 	checkErr(err)
 	fmt.Println("[DBG] proof gen", time.Since(start).Milliseconds())
-	if saveArtifacts {
-		fProof, err := os.Create("outputs/proof.proof")
-		checkErr(err)
-		proof.WriteTo(fProof)
-		fProof.Close()
-	}
+	fProof, err := os.Create("outputs/proof.proof")
+	checkErr(err)
+	proof.WriteTo(fProof)
+	fProof.Close()
 
 	if vk == nil {
 		panic("vk is nil")
@@ -211,9 +251,11 @@ func groth16Proof(r1cs constraint.ConstraintSystem, circuitName string, saveArti
 
 	// check that the proof can be verified in the Solidity smart contract
 	// through gnark-solidity-checker
-	if _vk, ok := vk.(solidity.VerifyingKey); ok {
-		fmt.Println("VERIFY solidity")
-		solidityVerification(_vk, proof, witnessPublic, []solidity.ExportOption{solidity.WithHashToFieldFunction(sha3.NewLegacyKeccak256())})
+	if solidityCheck {
+		if _vk, ok := vk.(solidity.VerifyingKey); ok {
+			fmt.Println("VERIFY solidity")
+			solidityVerification(_vk, proof, witnessPublic, []solidity.ExportOption{solidity.WithHashToFieldFunction(sha3.NewLegacyKeccak256())})
+		}
 	}
 }
 

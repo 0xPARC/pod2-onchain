@@ -4,9 +4,9 @@ Prove POD2s onchain in Ethereum.
 ## Usage
 - Run: `bash full-flow.sh`
   - alternatively:
-    - generate the pod proof: `cargo test --release test_pod_flow -- --nocapture`
-      - to use the non-pod plonky2 circuit (faster to run) run the test `test_simple_proof_flow`
-    - generate the groth16 proof: `go run main.go`
+    1. generate the pod proof: `cargo test --release test_pod_flow -- --nocapture`
+    2. generate the groth16 trusted setup: `go run main.go -t`
+    3. generate the groth16 proof: `go run main.go -p`
       - this will also generate the Solidity smart contract, located at
         `outputs/Verifier.sol`, ready to be deployed
 
