@@ -131,13 +131,20 @@ func main() {
 
 		fmt.Println("generate Groth16 proof")
 		start = time.Now()
-		groth16Proof(r1cs, pk, vk, *inputsPath, *outputsPath, *solidityCheck)
+		groth16Proof(r1cs, pk, vk, commonCircuitData, *inputsPath, *outputsPath, *solidityCheck)
 		fmt.Println("[DBG] generating Groth16 proof took:", time.Since(start).Milliseconds())
 	}
 	if *test {
 		fmt.Println("test witness generation and circuit constraints")
+		fmt.Println("load R1CS")
+		r1cs := groth16.NewCS(bn254.ID)
+		r1csBuf, err := os.ReadFile(filepath.Join(*outputsPath, "r1cs"))
+		checkErr(err)
+		_, err = r1cs.ReadFrom(bytes.NewBuffer(r1csBuf))
+		checkErr(err)
+
 		start := time.Now()
-		testCircuit(commonCircuitData, *inputsPath)
+		testCircuit(r1cs, commonCircuitData, *inputsPath)
 		fmt.Println("[DBG] testing circuit took:", time.Since(start).Milliseconds())
 	}
 }
@@ -208,7 +215,7 @@ func trustedSetup(r1cs constraint.ConstraintSystem, outputsPath string) (groth16
 	return pk, vk
 }
 
-func testCircuit(commonCircuitData types.CommonCircuitData, inputsPath string) {
+func testCircuit(r1cs constraint.ConstraintSystem, commonCircuitData types.CommonCircuitData, inputsPath string) {
 	var err error
 
 	proofWithPis := variables.DeserializeProofWithPublicInputs(types.ReadProofWithPublicInputs(filepath.Join(inputsPath, "proof_with_public_inputs.json")))
@@ -220,11 +227,19 @@ func testCircuit(commonCircuitData types.CommonCircuitData, inputsPath string) {
 		CommonCircuitData:       commonCircuitData,
 	}
 
+	// must not error with big int test engine
 	err = test.IsSolved(&assignment, &assignment, ecc.BN254.ScalarField(), test.WithNoSmallFieldCompatibility())
+	checkErr(err)
+
+	// parse assignment
+	validWitness, err := frontend.NewWitness(&assignment, ecc.BN254.ScalarField())
+	checkErr(err)
+
+	err = r1cs.IsSolved(validWitness)
 	checkErr(err)
 }
 
-func groth16Proof(r1cs constraint.ConstraintSystem, pk groth16.ProvingKey, vk groth16.VerifyingKey, inputsPath string, outputsPath string, solidityCheck bool) {
+func groth16Proof(r1cs constraint.ConstraintSystem, pk groth16.ProvingKey, vk groth16.VerifyingKey, commonCircuitData types.CommonCircuitData, inputsPath string, outputsPath string, solidityCheck bool) {
 	var err error
 
 	proofWithPis := variables.DeserializeProofWithPublicInputs(types.ReadProofWithPublicInputs(filepath.Join(inputsPath, "proof_with_public_inputs.json")))
@@ -233,6 +248,7 @@ func groth16Proof(r1cs constraint.ConstraintSystem, pk groth16.ProvingKey, vk gr
 		Proof:                   proofWithPis.Proof,
 		PublicInputs:            proofWithPis.PublicInputs,
 		VerifierOnlyCircuitData: verifierOnlyCircuitData,
+		CommonCircuitData:       commonCircuitData,
 	}
 
 	fmt.Println("Generating witness", time.Now())
