@@ -14,6 +14,7 @@ fi
 echo -e "\n================================================================"
 echo "- [generating groth16 proof & solidity contract]: go run main.go -p -s"
 go run main.go -p -s
+# go run -tags=debug main.go -m # to test the r1cs (faster) without generating a proof
 
 echo -e "\n================================================================"
 echo "- proof, verifying key and the Solidity smart contract to verify the proofs can be found at 'outputs' directory"

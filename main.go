@@ -1,3 +1,6 @@
+//go:build debug
+// +build debug
+
 package main
 
 import (
@@ -104,7 +107,8 @@ func main() {
 		fmt.Println("build r1cs circuit")
 		r1cs := r1csCircuit(proofWithPis, verifierOnlyCircuitData, commonCircuitData, *outputsPath)
 
-		fmt.Println("gen ts")
+		// _ = r1cs              // TMP rm
+		fmt.Println("gen ts") // TODO uncomment
 		_, _ = trustedSetup(r1cs, *outputsPath)
 	}
 	if *prove {
@@ -258,9 +262,15 @@ func groth16Proof(r1cs constraint.ConstraintSystem, pk groth16.ProvingKey, vk gr
 	witness.WriteTo(fWitness)
 	fWitness.Close()
 
-	// get the public witness (public inputs)
+	// print the public witness (public inputs)
 	witnessPublic, err := witness.Public()
 	checkErr(err)
+	witnessSchema, err := frontend.NewSchema(ecc.BN254.ScalarField(), &assignment)
+	checkErr(err)
+	witnessPublicJSON, err := witnessPublic.ToJSON(witnessSchema)
+	checkErr(err)
+	_ = witnessPublicJSON // TODO WIP
+	// fmt.Println("[public witness]:", string(witnessPublicJSON))
 
 	// store witnessPublic in a file
 	fWitnessPublic, err := os.Create(filepath.Join(outputsPath, "witness.public"))
