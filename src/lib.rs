@@ -69,6 +69,7 @@ pub fn prove_pod(
         .chain(pod.pod.vd_set().root().0.iter())
         .cloned()
         .collect_vec();
+    dbg!(&public_inputs);
     let pod_proof_with_pis = pod2::middleware::ProofWithPublicInputs {
         proof: pod_proof.clone(),
         public_inputs,
@@ -260,6 +261,9 @@ pub fn wrap_bn128(
     let vd = circuit_data.verifier_data();
     let proof = circuit_data.prove(pw)?;
 
+    // sanity check: verify proof
+    vd.verify(proof.clone())?;
+
     Ok((vd, circuit_data, proof))
 }
 
@@ -297,7 +301,6 @@ pub fn store_files(
 mod tests {
     use super::*;
 
-    use plonky2::field::types::Field;
     use pod2::{
         backends::plonky2::{basetypes::DEFAULT_VD_SET, mainpod::Prover},
         frontend::{MainPodBuilder, Operation},
@@ -306,16 +309,16 @@ mod tests {
 
     // returns a MainPod, example adapted from pod2/examples/main_pod_points.rs
     pub fn compute_pod_proof() -> Result<pod2::frontend::MainPod> {
-        let params = Params {
-            max_input_pods: 0,
-            ..Default::default()
-        };
+        let params = Params::default();
 
         let mut builder = MainPodBuilder::new(&params, &DEFAULT_VD_SET);
-        let set_entries = [1, 2, 3].into_iter().map(|n| n.into()).collect();
+        let set_entries = ["somestring", "2", "3"]
+            .into_iter()
+            .map(|n| n.into())
+            .collect();
         let set = Set::new(10, set_entries)?;
 
-        builder.pub_op(Operation::set_contains(set, 1))?;
+        builder.pub_op(Operation::set_contains(set, "3"))?;
 
         let prover = Prover {};
         let pod = builder.prove(&prover).unwrap();
@@ -343,7 +346,7 @@ mod tests {
 
         // step 3) store the files
         store_files(
-            Path::new("testdata/pod"),
+            Path::new("./tmp/plonky2-proof"),
             verifier_data.verifier_only,
             common_circuit_data,
             proof_with_pis,

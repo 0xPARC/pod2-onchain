@@ -4,9 +4,12 @@ echo "================================================="
 echo "- [generating plonky2 proof]: cargo test --release test_pod_flow -- --nocapture"
 cargo test --release test_pod_flow -- --nocapture
 
-echo -e "\n================================================================"
-echo "- [generating groth16 trusted setup]: go run main.go -t"
-go run main.go -t
+# if the trusted setup does not exist, create it
+if [ ! -d "tmp/groth-artifacts" ]; then
+	echo -e "\n================================================================"
+	echo "- [generating groth16 trusted setup]: go run main.go -t"
+	go run main.go -t
+fi
 
 echo -e "\n================================================================"
 echo "- [generating groth16 proof & solidity contract]: go run main.go -p -s"

@@ -1,5 +1,5 @@
-github.com/arnaucube/gnark-plonky2-verifier v0.0.0-20250815160608-853a273aa998 h1:JpIPicDO/Al8/2BnT7W/YaXvrgSeeo0NvYO+L+vOubk=
-github.com/arnaucube/gnark-plonky2-verifier v0.0.0-20250815160608-853a273aa998/go.mod h1:c144MdRU1b0w/khA+lTrTFGcRHiKp1obwv8VGv/LQzI=
+github.com/arnaucube/gnark-plonky2-verifier v0.0.0-20251003080955-8fe52b5161d8 h1:RzIz0PIenhUVRafKP7cN6BXToQRFRQvyGZYVn0dLZqQ=
+github.com/arnaucube/gnark-plonky2-verifier v0.0.0-20251003080955-8fe52b5161d8/go.mod h1:pRpnwbDvqfoNbDnrEfNNyXA+nzGFJGx6D3KMr6rWBUM=
 github.com/bits-and-blooms/bitset v1.22.0 h1:Tquv9S8+SGaS3EhyA+up3FXzmkhxPGjQQCkcs2uw7w4=
 github.com/bits-and-blooms/bitset v1.22.0/go.mod h1:7hO7Gc7Pp1vODcmWvKMRA9BNmbv6a/7QIWpPxHddWR8=
 github.com/blang/semver/v4 v4.0.0 h1:1PFHFE6yCCTv8C1TeyNNarDzntLi7wMI5i/pzqYIsAM=
