@@ -24,6 +24,7 @@ import (
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/frontend/cs/r1cs"
 	"github.com/consensys/gnark/profile"
+	"github.com/consensys/gnark/test"
 	"github.com/succinctlabs/gnark-plonky2-verifier/types"
 	"github.com/succinctlabs/gnark-plonky2-verifier/variables"
 	"github.com/succinctlabs/gnark-plonky2-verifier/verifier"
@@ -40,6 +41,7 @@ func checkErr(err error, msg ...string) {
 func main() {
 	ts := flag.Bool("t", false, "enable the generation of a new Trusted Setup (includes generating the R1CS and the Solidity verifier)")
 	prove := flag.Bool("p", false, "enable the generation a Groth16 proof")
+	test := flag.Bool("m", false, "test the witness generation of the circuit")
 	solidityCheck := flag.Bool("s", false, "enable solidity verification check")
 	verifyProof := flag.Bool("v", false, "run a proof verification")
 
@@ -88,6 +90,7 @@ func main() {
 	fmt.Printf("outputs path: %s\n", *outputsPath)
 	fmt.Println("Trusted Setup generation:", *ts)
 	fmt.Println("Groth16 proof generation:", *prove)
+	fmt.Println("Groth16 circuit test:", *test)
 	fmt.Println("Solidity verification check:", *solidityCheck)
 
 	commonCircuitData := types.ReadCommonCircuitData(filepath.Join(*inputsPath, "common_circuit_data.json"))
@@ -128,8 +131,21 @@ func main() {
 
 		fmt.Println("generate Groth16 proof")
 		start = time.Now()
-		groth16Proof(r1cs, pk, vk, *inputsPath, *outputsPath, *solidityCheck)
+		groth16Proof(r1cs, pk, vk, commonCircuitData, *inputsPath, *outputsPath, *solidityCheck)
 		fmt.Println("[DBG] generating Groth16 proof took:", time.Since(start).Milliseconds())
+	}
+	if *test {
+		fmt.Println("test witness generation and circuit constraints")
+		fmt.Println("load R1CS")
+		r1cs := groth16.NewCS(bn254.ID)
+		r1csBuf, err := os.ReadFile(filepath.Join(*outputsPath, "r1cs"))
+		checkErr(err)
+		_, err = r1cs.ReadFrom(bytes.NewBuffer(r1csBuf))
+		checkErr(err)
+
+		start := time.Now()
+		testCircuit(r1cs, commonCircuitData, *inputsPath)
+		fmt.Println("[DBG] testing circuit took:", time.Since(start).Milliseconds())
 	}
 }
 
@@ -199,7 +215,7 @@ func trustedSetup(r1cs constraint.ConstraintSystem, outputsPath string) (groth16
 	return pk, vk
 }
 
-func groth16Proof(r1cs constraint.ConstraintSystem, pk groth16.ProvingKey, vk groth16.VerifyingKey, inputsPath string, outputsPath string, solidityCheck bool) {
+func testCircuit(r1cs constraint.ConstraintSystem, commonCircuitData types.CommonCircuitData, inputsPath string) {
 	var err error
 
 	proofWithPis := variables.DeserializeProofWithPublicInputs(types.ReadProofWithPublicInputs(filepath.Join(inputsPath, "proof_with_public_inputs.json")))
@@ -208,6 +224,31 @@ func groth16Proof(r1cs constraint.ConstraintSystem, pk groth16.ProvingKey, vk gr
 		Proof:                   proofWithPis.Proof,
 		PublicInputs:            proofWithPis.PublicInputs,
 		VerifierOnlyCircuitData: verifierOnlyCircuitData,
+		CommonCircuitData:       commonCircuitData,
+	}
+
+	// must not error with big int test engine
+	err = test.IsSolved(&assignment, &assignment, ecc.BN254.ScalarField(), test.WithNoSmallFieldCompatibility())
+	checkErr(err)
+
+	// parse assignment
+	validWitness, err := frontend.NewWitness(&assignment, ecc.BN254.ScalarField())
+	checkErr(err)
+
+	err = r1cs.IsSolved(validWitness)
+	checkErr(err)
+}
+
+func groth16Proof(r1cs constraint.ConstraintSystem, pk groth16.ProvingKey, vk groth16.VerifyingKey, commonCircuitData types.CommonCircuitData, inputsPath string, outputsPath string, solidityCheck bool) {
+	var err error
+
+	proofWithPis := variables.DeserializeProofWithPublicInputs(types.ReadProofWithPublicInputs(filepath.Join(inputsPath, "proof_with_public_inputs.json")))
+	verifierOnlyCircuitData := variables.DeserializeVerifierOnlyCircuitData(types.ReadVerifierOnlyCircuitData(filepath.Join(inputsPath, "verifier_only_circuit_data.json")))
+	assignment := verifier.ExampleVerifierCircuit{
+		Proof:                   proofWithPis.Proof,
+		PublicInputs:            proofWithPis.PublicInputs,
+		VerifierOnlyCircuitData: verifierOnlyCircuitData,
+		CommonCircuitData:       commonCircuitData,
 	}
 
 	fmt.Println("Generating witness", time.Now())
