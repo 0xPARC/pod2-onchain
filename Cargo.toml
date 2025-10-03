@@ -11,7 +11,8 @@ serde = "1.0.219"
 serde_json = "1.0.141"
 clap = { version = "4.0", features = ["derive"] }
 
-plonky2 = { git = "https://github.com/0xPARC/plonky2.git", rev = "767a098d89b8d50d8aacfdce0c0a7222e8760d37" }
+plonky2 = { git = "https://github.com/0xPARC/plonky2.git", rev = "109d517d09c210ae4c2cee381d3e3fbc04aa3812" }
+# plonky2 = { git = "https://github.com/0xPARC/plonky2.git", rev = "767a098d89b8d50d8aacfdce0c0a7222e8760d37" }
 pod2 = { git="https://github.com/0xPARC/pod2", rev = "352b1fdac1bdb476a8afa48e7fa3d70075ae563a", default-features = false, features = ["backend_plonky2", "zk"]}
 
 # dependencies for the wrapper
@@ -30,3 +31,6 @@ backend_plonky2 = ["pod2/plonky2"]
 zk = ["pod2/zk"]
 disk_cache = ["pod2/disk_cache"]
 mem_cache = ["pod2/mem_cache"]
+
+[patch."https://github.com/0xPARC/plonky2"]
+plonky2 = { path = "../plonky2/plonky2" }

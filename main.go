@@ -1,3 +1,6 @@
+//go:build debug
+// +build debug
+
 package main
 
 import (
@@ -45,8 +48,8 @@ func main() {
 	solidityCheck := flag.Bool("s", false, "enable solidity verification check")
 	verifyProof := flag.Bool("v", false, "run a proof verification")
 
-	outputsPath := flag.String("o", "outputs", "dir of the artifacts (trusted setup, r1cs, solidity)")
-	inputsPath := flag.String("i", "testdata/pod", "dir of the plonky2 circuit to use")
+	inputsPath := flag.String("i", "tmp/plonky2-proof", "dir of the plonky2 circuit to use")
+	outputsPath := flag.String("o", "tmp/groth-artifacts", "dir of the artifacts (trusted setup, r1cs, solidity)")
 
 	flag.Parse()
 
@@ -104,7 +107,8 @@ func main() {
 		fmt.Println("build r1cs circuit")
 		r1cs := r1csCircuit(proofWithPis, verifierOnlyCircuitData, commonCircuitData, *outputsPath)
 
-		fmt.Println("gen ts")
+		// _ = r1cs              // TMP rm
+		fmt.Println("gen ts") // TODO uncomment
 		_, _ = trustedSetup(r1cs, *outputsPath)
 	}
 	if *prove {
@@ -256,6 +260,12 @@ func groth16Proof(r1cs constraint.ConstraintSystem, pk groth16.ProvingKey, vk gr
 	witness, err := frontend.NewWitness(&assignment, ecc.BN254.ScalarField())
 	checkErr(err)
 
+	// store witness in a file
+	fWitness, err := os.Create(filepath.Join(outputsPath, "witness"))
+	checkErr(err)
+	witness.WriteTo(fWitness)
+	fWitness.Close()
+
 	// print the public witness (public inputs)
 	witnessPublic, err := witness.Public()
 	checkErr(err)
@@ -263,18 +273,14 @@ func groth16Proof(r1cs constraint.ConstraintSystem, pk groth16.ProvingKey, vk gr
 	checkErr(err)
 	witnessPublicJSON, err := witnessPublic.ToJSON(witnessSchema)
 	checkErr(err)
-	fmt.Println("[public witness]:", string(witnessPublicJSON))
+	_ = witnessPublicJSON // TODO WIP
+	// fmt.Println("[public witness]:", string(witnessPublicJSON))
 
 	// store witnessPublic in a file
 	fWitnessPublic, err := os.Create(filepath.Join(outputsPath, "witness.public"))
 	checkErr(err)
 	witnessPublic.WriteTo(fWitnessPublic)
 	fWitnessPublic.Close()
-
-	fWitness, err := os.Create(filepath.Join(outputsPath, "witness"))
-	checkErr(err)
-	witness.WriteTo(fWitness)
-	fWitness.Close()
 	fmt.Println("[DBG] witness gen", time.Since(start).Milliseconds())
 
 	fmt.Println("Creating proof", time.Now())
