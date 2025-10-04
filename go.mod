@@ -1,4 +1,4 @@
-module pod2-onchain
+module github.com/0xPARC/pod2-onchain
 
 go 1.24.4
 
