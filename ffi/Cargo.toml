@@ -1,0 +1,23 @@
+[package]
+name = "ffi"
+version = "0.1.0"
+edition = "2024"
+
+[build-dependencies]
+bindgen = "*"
+
+[dependencies]
+plonky2 = { git = "https://github.com/0xPARC/plonky2.git", rev = "109d517d09c210ae4c2cee381d3e3fbc04aa3812" }
+pod2 = { git="https://github.com/0xPARC/pod2", rev = "352b1fdac1bdb476a8afa48e7fa3d70075ae563a", default-features = false, features = ["backend_plonky2", "zk"]}
+serde_json = "1.0.143"
+anyhow = "1.0.56"
+pod2_onchain = { path = "../" }
+
+[dev-dependencies]
+
+[features]
+default = ["backend_plonky2", "zk", "mem_cache"]
+backend_plonky2 = ["pod2/plonky2"]
+zk = ["pod2/zk"]
+disk_cache = ["pod2/disk_cache"]
+mem_cache = ["pod2/mem_cache"]

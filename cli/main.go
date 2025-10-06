@@ -119,7 +119,7 @@ func main() {
 
 		fmt.Println("generate Groth16 proof")
 		start = time.Now()
-		pod2onchain.Groth16Proof(r1cs, pk, vk, proofWithPis, verifierOnlyCircuitData, commonCircuitData, *outputsPath, *solidityCheck)
+		pod2onchain.Groth16ProofStore(r1cs, pk, vk, proofWithPis, verifierOnlyCircuitData, commonCircuitData, *outputsPath, *solidityCheck)
 		fmt.Println("[DBG] generating Groth16 proof took:", time.Since(start).Milliseconds())
 	}
 	if *witnessCheck {

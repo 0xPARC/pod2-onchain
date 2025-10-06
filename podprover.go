@@ -124,7 +124,35 @@ func CheckR1CS(r1cs constraint.ConstraintSystem, proofWithPis variables.ProofWit
 	checkErr(err)
 }
 
-func Groth16Proof(r1cs constraint.ConstraintSystem, pk groth16.ProvingKey, vk groth16.VerifyingKey, proofWithPis variables.ProofWithPublicInputs, verifierOnlyCircuitData variables.VerifierOnlyCircuitData, commonCircuitData types.CommonCircuitData, outputsPath string, solidityCheck bool) {
+func Groth16Proof(r1cs constraint.ConstraintSystem, pk groth16.ProvingKey, vk groth16.VerifyingKey, proofWithPis variables.ProofWithPublicInputs, verifierOnlyCircuitData variables.VerifierOnlyCircuitData, commonCircuitData types.CommonCircuitData) (groth16.Proof, error) {
+	var err error
+
+	assignment := verifier.ExampleVerifierCircuit{
+		Proof:                   proofWithPis.Proof,
+		PublicInputs:            proofWithPis.PublicInputs,
+		VerifierOnlyCircuitData: verifierOnlyCircuitData,
+		CommonCircuitData:       commonCircuitData,
+	}
+
+	fmt.Println("Generating witness", time.Now())
+	start := time.Now()
+	witness, err := frontend.NewWitness(&assignment, ecc.BN254.ScalarField())
+	if err != nil {
+		return nil, err
+	}
+
+	fmt.Println("Creating proof", time.Now())
+	start = time.Now()
+	proof, err := groth16.Prove(r1cs, pk, witness, backend.WithProverHashToFieldFunction(sha3.NewLegacyKeccak256()))
+	if err != nil {
+		return nil, err
+	}
+	fmt.Println("[DBG] proof gen", time.Since(start).Milliseconds())
+
+	return proof, nil
+}
+
+func Groth16ProofStore(r1cs constraint.ConstraintSystem, pk groth16.ProvingKey, vk groth16.VerifyingKey, proofWithPis variables.ProofWithPublicInputs, verifierOnlyCircuitData variables.VerifierOnlyCircuitData, commonCircuitData types.CommonCircuitData, outputsPath string, solidityCheck bool) {
 	var err error
 
 	assignment := verifier.ExampleVerifierCircuit{
