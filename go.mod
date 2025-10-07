@@ -31,4 +31,4 @@ require (
 
 // replace gnark-plonky2-verifier by the fork that updates it to be compatible
 // with latest plonky2 version
-replace github.com/succinctlabs/gnark-plonky2-verifier => github.com/arnaucube/gnark-plonky2-verifier v0.0.0-20251003080955-8fe52b5161d8
+replace github.com/succinctlabs/gnark-plonky2-verifier => github.com/arnaucube/gnark-plonky2-verifier v0.0.0-20251003081055-02979848ab6d

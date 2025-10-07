@@ -30,6 +30,3 @@ backend_plonky2 = ["pod2/plonky2"]
 zk = ["pod2/zk"]
 disk_cache = ["pod2/disk_cache"]
 mem_cache = ["pod2/mem_cache"]
-
-[patch."https://github.com/0xPARC/plonky2"]
-plonky2 = { path = "../plonky2/plonky2" }

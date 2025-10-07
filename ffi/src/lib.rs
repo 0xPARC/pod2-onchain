@@ -86,10 +86,10 @@ pub fn groth16_prove(
     let proof_bytes: Vec<u8> = if proof_out_len > 0 && !proof_out_ptr.is_null() {
         let slice = unsafe { std::slice::from_raw_parts(proof_out_ptr, proof_out_len as usize) };
         let vec = slice.to_vec();
-        // don't unfree the pointer, since it is still used later for the witness
+        unsafe { GoFree(proof_out_ptr) };
         vec
     } else {
-        vec![]
+        return Err(anyhow!("groth16_prove: null pointer of proof_out"));
     };
     let pub_inp_bytes: Vec<u8> = if wit_out_len > 0 && !wit_out_ptr.is_null() {
         let slice = unsafe { std::slice::from_raw_parts(wit_out_ptr, wit_out_len as usize) };
@@ -97,7 +97,7 @@ pub fn groth16_prove(
         unsafe { GoFree(wit_out_ptr) };
         vec
     } else {
-        vec![]
+        return Err(anyhow!("groth16_prove: null pointer of wit_out"));
     };
     Ok((proof_bytes, pub_inp_bytes))
 }

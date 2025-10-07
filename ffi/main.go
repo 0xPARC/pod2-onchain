@@ -130,8 +130,7 @@ func Groth16Proof(ptr *C.uchar, inLen C.int, outProofLen *C.int, outWitLen *C.in
 
 	// allocate C memory for the proof output and copy
 	if len(proofBytes) == 0 {
-		*outProofLen = 0
-		return nil, nil
+		panic("len(proofBytes)==0")
 	}
 	outPtr := C.malloc(C.size_t(len(proofBytes)))
 	out := unsafe.Slice((*byte)(outPtr), len(proofBytes))
@@ -140,8 +139,7 @@ func Groth16Proof(ptr *C.uchar, inLen C.int, outProofLen *C.int, outWitLen *C.in
 
 	// allocate C memory for the witness output and copy
 	if len(witBytes) == 0 {
-		*outWitLen = 0
-		return nil, nil
+		panic("len(witBytes)==0")
 	}
 	outWitPtr := C.malloc(C.size_t(len(witBytes)))
 	outWit := unsafe.Slice((*byte)(outWitPtr), len(witBytes))
