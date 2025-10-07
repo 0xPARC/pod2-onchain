@@ -40,6 +40,28 @@ func checkErr(err error, msg ...string) {
 	}
 }
 
+//export TrustedSetup
+func TrustedSetup(inputsPathChar *C.char, outputsPathChar *C.char) *C.char {
+	inputsPath := C.GoString(inputsPathChar)
+	outputsPath := C.GoString(outputsPathChar)
+
+	_ = os.Mkdir(outputsPath, os.ModePerm)
+
+	commonCircuitData = types.ReadCommonCircuitData(filepath.Join(inputsPath, "common_circuit_data.json"))
+	proofWithPis := variables.DeserializeProofWithPublicInputs(types.ReadProofWithPublicInputs(filepath.Join(inputsPath, "proof_with_public_inputs.json")))
+	verifierOnlyCircuitData = variables.DeserializeVerifierOnlyCircuitData(types.ReadVerifierOnlyCircuitData(filepath.Join(inputsPath, "verifier_only_circuit_data.json")))
+	fmt.Println("(go) plonky2's common_circuit_data & proof_with_pis & verifier_only_circuit_data loaded")
+
+	fmt.Println("(go) build r1cs circuit")
+	r1cs := pod2onchain.R1csCircuit(proofWithPis, verifierOnlyCircuitData, commonCircuitData, outputsPath)
+
+	fmt.Println("(go) start to generate trusted setup")
+	_, _ = pod2onchain.TrustedSetup(r1cs, outputsPath)
+	fmt.Println("(go) trusted setup generated")
+
+	return C.CString("trusted setup generated")
+}
+
 //export Init
 func Init(inputsPathChar *C.char, outputsPathChar *C.char) *C.char {
 	inputsPath := C.GoString(inputsPathChar)

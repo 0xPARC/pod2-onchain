@@ -23,6 +23,21 @@ use pod2::backends::plonky2::basetypes::{Proof, C, D, F};
 
 use pod2_onchain::poseidon_bn128::config::PoseidonBN128GoldilocksConfig;
 
+pub fn trusted_setup(input_path: &str, output_path: &str) -> String {
+    let input_path = CString::new(input_path).unwrap();
+    let output_path = CString::new(output_path).unwrap();
+
+    unsafe {
+        let cstr = CStr::from_ptr(TrustedSetup(
+            input_path.as_ptr() as *mut c_char,
+            output_path.as_ptr() as *mut c_char,
+        ));
+        let s = String::from_utf8_lossy(cstr.to_bytes()).to_string();
+        GoFree(cstr.as_ptr() as *mut c_uchar);
+        s
+    }
+}
+
 /// Loads into memory the
 ///   - Groth16's R1CS, ProvingKey and VerifierKey
 ///   - Plonky2's VerifierOnlyCircuitData, CommonCircuitData
@@ -110,45 +125,37 @@ pub fn groth16_verify(proof: Vec<u8>, public_inputs: Vec<u8>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    use pod2::{
-        backends::plonky2::{basetypes::DEFAULT_VD_SET, mainpod::Prover},
-        frontend::{MainPodBuilder, Operation},
-        middleware::{containers::Set, Params},
-    };
-
-    // returns a MainPod, example adapted from pod2/examples/main_pod_points.rs
-    pub fn compute_pod_proof() -> Result<pod2::frontend::MainPod> {
-        let params = Params::default();
-
-        let mut builder = MainPodBuilder::new(&params, &DEFAULT_VD_SET);
-        let set_entries = ["somestring", "2", "3"]
-            .into_iter()
-            .map(|n| n.into())
-            .collect();
-        let set = Set::new(10, set_entries)?;
-
-        builder.pub_op(Operation::set_contains(set, "3"))?;
-
-        let prover = Prover {};
-        let pod = builder.prove(&prover).unwrap();
-        Ok(pod)
-    }
+    use std::path::Path;
 
     #[test]
     fn test_ffi_bindings() -> Result<()> {
-        let result = init("../tmp/plonky2-proof", "../tmp/groth-artifacts");
+        let input_path = "../tmp/plonky2-proof";
+        let output_path = "../tmp/groth-artifacts";
+
+        // if plonky2 groth16-friendly proof does not exist yet, generate it
+        if !Path::new(input_path).is_dir() {
+            println!("generating plonky2 groth16-friendly proof");
+            pod2_onchain::sample_plonky2_g16_friendly_proof(input_path)?;
+        }
+
+        // if trusted setup does not exist yet, generate it
+        if !Path::new(output_path).is_dir() {
+            println!("generating groth16's trusted setup");
+            let result = trusted_setup(input_path, output_path);
+            println!("trusted_setup result: {}", result);
+        }
+
+        let result = init(input_path, output_path);
         println!("init result: {}", result);
 
         let result = check_init();
         println!("check_init result: {}", result);
 
-        let pod = compute_pod_proof()?;
+        let pod = pod2_onchain::sample_main_pod()?;
         let (_, _, proof_with_pis) = pod2_onchain::prove_pod(pod)?;
 
         println!("calling groth16_prove");
         let (g16_proof, g16_pub_inp) = groth16_prove(proof_with_pis)?;
-        println!("g16 proof: {:?}", g16_proof);
 
         groth16_verify(g16_proof, g16_pub_inp)?;
 

@@ -1,8 +1,9 @@
 # pod2-onchain
 Prove POD2s onchain in Ethereum.
 
-## Usage
-- Run: `bash full-flow.sh`
+## Run tests
+- FFI test, run: `cd ffi && cargo test --release -- --nocapture`
+- CLI test, run: `bash test-cli.sh`
   - alternatively:
     1. generate the pod proof: `cargo test --release test_pod_flow -- --nocapture`
     2. generate the groth16 trusted setup: `go run main.go -t`
