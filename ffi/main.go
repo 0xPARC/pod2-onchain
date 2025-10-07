@@ -15,18 +15,21 @@ import (
 	"unsafe"
 
 	pod2onchain "github.com/0xPARC/pod2-onchain"
+	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark-crypto/ecc/bn254"
+	"github.com/consensys/gnark/backend"
 	"github.com/consensys/gnark/backend/groth16"
+	"github.com/consensys/gnark/backend/witness"
 	"github.com/consensys/gnark/constraint"
 	"github.com/succinctlabs/gnark-plonky2-verifier/types"
 	"github.com/succinctlabs/gnark-plonky2-verifier/variables"
+	"golang.org/x/crypto/sha3"
 )
 
 var r1cs constraint.ConstraintSystem
 var pk groth16.ProvingKey
 var vk groth16.VerifyingKey
 
-// var proofWithPis variables.ProofWithPublicInputs
 var verifierOnlyCircuitData variables.VerifierOnlyCircuitData
 var commonCircuitData types.CommonCircuitData
 
@@ -80,7 +83,7 @@ func CheckInit() *C.char {
 }
 
 //export Groth16Proof
-func Groth16Proof(ptr *C.uchar, inLen C.int, outLen *C.int) *C.uchar {
+func Groth16Proof(ptr *C.uchar, inLen C.int, outProofLen *C.int, outWitLen *C.int) (*C.uchar, *C.uchar) {
 	proofWithPisBytes := C.GoBytes(unsafe.Pointer(ptr), inLen)
 
 	var proofWithPisRaw types.ProofWithPublicInputsRaw
@@ -91,7 +94,7 @@ func Groth16Proof(ptr *C.uchar, inLen C.int, outLen *C.int) *C.uchar {
 
 	fmt.Println("(go) generate Groth16 proof")
 	start := time.Now()
-	g16Proof, err := pod2onchain.Groth16Proof(r1cs, pk, vk, proofWithPis, verifierOnlyCircuitData, commonCircuitData)
+	g16Proof, witnessPublic, err := pod2onchain.Groth16Proof(r1cs, pk, vk, proofWithPis, verifierOnlyCircuitData, commonCircuitData)
 	checkErr(err)
 	fmt.Println("(go) [DBG] generating Groth16 proof took:", time.Since(start).Milliseconds())
 
@@ -99,17 +102,54 @@ func Groth16Proof(ptr *C.uchar, inLen C.int, outLen *C.int) *C.uchar {
 	g16Proof.WriteRawTo(&buf)
 	proofBytes := buf.Bytes()
 
-	// allocate C memory for the output and copy
+	var bufW bytes.Buffer
+	witnessPublic.WriteTo(&bufW)
+	witBytes := bufW.Bytes()
+
+	// allocate C memory for the proof output and copy
 	if len(proofBytes) == 0 {
-		*outLen = 0
-		return nil
+		*outProofLen = 0
+		return nil, nil
 	}
 	outPtr := C.malloc(C.size_t(len(proofBytes)))
 	out := unsafe.Slice((*byte)(outPtr), len(proofBytes))
 	copy(out, proofBytes)
+	*outProofLen = C.int(len(proofBytes))
 
-	*outLen = C.int(len(proofBytes))
-	return (*C.uchar)(outPtr)
+	// allocate C memory for the witness output and copy
+	if len(witBytes) == 0 {
+		*outWitLen = 0
+		return nil, nil
+	}
+	outWitPtr := C.malloc(C.size_t(len(witBytes)))
+	outWit := unsafe.Slice((*byte)(outWitPtr), len(witBytes))
+	copy(outWit, witBytes)
+	*outWitLen = C.int(len(witBytes))
+
+	return (*C.uchar)(outPtr), (*C.uchar)(outWitPtr)
+}
+
+//export Groth16Verify
+func Groth16Verify(proofPtr *C.uchar, proofInLen C.int, witPtr *C.uchar, witInLen C.int) *C.char {
+	proofBytes := C.GoBytes(unsafe.Pointer(proofPtr), proofInLen)
+	witnessPublicBytes := C.GoBytes(unsafe.Pointer(witPtr), witInLen)
+
+	proof := groth16.NewProof(bn254.ID)
+	_, err := proof.ReadFrom(bytes.NewBuffer(proofBytes))
+	checkErr(err)
+
+	fmt.Println("(go) going to parse pubinp")
+	witnessPublic, err := witness.New(ecc.BN254.ScalarField())
+	checkErr(err)
+	_, err = witnessPublic.ReadFrom(bytes.NewBuffer(witnessPublicBytes))
+	checkErr(err)
+	fmt.Println("(go) public inputs:", witnessPublic)
+
+	err = groth16.Verify(proof, vk, witnessPublic, backend.WithVerifierHashToFieldFunction(sha3.NewLegacyKeccak256()))
+	if err != nil {
+		return C.CString(fmt.Sprintf("err: %s", err))
+	}
+	return C.CString("ok")
 }
 
 //export GoFree
