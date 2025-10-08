@@ -29,14 +29,15 @@ use plonky2::{
 
 use pod2::{
     backends::plonky2::{
-        basetypes::{Proof, C, D, F},
+        basetypes::{Proof, C, D, DEFAULT_VD_SET, F},
         circuits::{
             common::{CircuitBuilderPod, Flattenable, StatementTarget},
             mainpod::calculate_statements_hash_circuit,
         },
-        mainpod::{pad_statement, statement::Statement as bStatement},
+        mainpod::{pad_statement, statement::Statement as bStatement, Prover},
     },
-    middleware::{Params, Statement, ToFields},
+    frontend::{MainPodBuilder, Operation},
+    middleware::{containers::Set, Params, Statement, ToFields},
 };
 
 use crate::poseidon_bn128::config::PoseidonBN128GoldilocksConfig;
@@ -297,61 +298,59 @@ pub fn store_files(
     Ok(())
 }
 
+/// returns a MainPod, example adapted from pod2/examples/main_pod_points.rs
+pub fn sample_main_pod() -> Result<pod2::frontend::MainPod> {
+    let params = Params::default();
+
+    let mut builder = MainPodBuilder::new(&params, &DEFAULT_VD_SET);
+    let set_entries = ["somestring", "2", "3"]
+        .into_iter()
+        .map(|n| n.into())
+        .collect();
+    let set = Set::new(10, set_entries)?;
+
+    builder.pub_op(Operation::set_contains(set, "3"))?;
+
+    let prover = Prover {};
+    let pod = builder.prove(&prover).unwrap();
+    Ok(pod)
+}
+
+/// generates and stores a Plonky2 proof which is Groth16 friendly
+pub fn sample_plonky2_g16_friendly_proof(path: &str) -> Result<()> {
+    // step 1) obtain the pod to be proven
+    let start = Instant::now();
+    let pod = sample_main_pod()?;
+    println!(
+        "[TIME] generate pod & compute pod proof took: {:?}",
+        start.elapsed()
+    );
+
+    // step 2) generate new plonky2 proof from POD's proof
+    let start = Instant::now();
+    let (verifier_data, common_circuit_data, proof_with_pis) = prove_pod(pod)?;
+    println!(
+        "[TIME] plonky2 proof (groth16-friendly) took: {:?}",
+        start.elapsed()
+    );
+    assert_eq!(proof_with_pis.public_inputs.len(), 14); // poseidon + vdset_root + sha256 + gamma
+
+    // step 3) store the files
+    store_files(
+        Path::new(path),
+        verifier_data.verifier_only,
+        common_circuit_data,
+        proof_with_pis,
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
-
-    use pod2::{
-        backends::plonky2::{basetypes::DEFAULT_VD_SET, mainpod::Prover},
-        frontend::{MainPodBuilder, Operation},
-        middleware::{containers::Set, Params},
-    };
-
-    // returns a MainPod, example adapted from pod2/examples/main_pod_points.rs
-    pub fn compute_pod_proof() -> Result<pod2::frontend::MainPod> {
-        let params = Params::default();
-
-        let mut builder = MainPodBuilder::new(&params, &DEFAULT_VD_SET);
-        let set_entries = ["somestring", "2", "3"]
-            .into_iter()
-            .map(|n| n.into())
-            .collect();
-        let set = Set::new(10, set_entries)?;
-
-        builder.pub_op(Operation::set_contains(set, "3"))?;
-
-        let prover = Prover {};
-        let pod = builder.prove(&prover).unwrap();
-        Ok(pod)
-    }
 
     #[test]
     fn test_pod_flow() -> Result<()> {
-        // step 1) obtain the pod to be proven
-        let start = Instant::now();
-        let pod = compute_pod_proof()?;
-        println!(
-            "[TIME] generate pod & compute pod proof took: {:?}",
-            start.elapsed()
-        );
-
-        // step 2) generate new plonky2 proof from POD's proof
-        let start = Instant::now();
-        let (verifier_data, common_circuit_data, proof_with_pis) = prove_pod(pod)?;
-        println!(
-            "[TIME] plonky2 proof (groth16-friendly) took: {:?}",
-            start.elapsed()
-        );
-        assert_eq!(proof_with_pis.public_inputs.len(), 14); // poseidon + vdset_root + sha256 + gamma
-
-        // step 3) store the files
-        store_files(
-            Path::new("./tmp/plonky2-proof"),
-            verifier_data.verifier_only,
-            common_circuit_data,
-            proof_with_pis,
-        )?;
-
-        Ok(())
+        sample_plonky2_g16_friendly_proof("./tmp/plonky2-proof")
     }
 }
