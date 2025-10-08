@@ -201,7 +201,7 @@ mod merkle_tree_tests {
         plonk::config::GenericConfig,
     };
 
-    use super::super::super::PoseidonBN128GoldilocksConfig;
+    use super::super::config::PoseidonBN128GoldilocksConfig;
 
     fn random_data<F: RichField>(n: usize, k: usize) -> Vec<Vec<F>> {
         (0..n).map(|_| F::rand_vec(k)).collect()

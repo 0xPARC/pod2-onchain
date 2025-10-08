@@ -2,7 +2,7 @@
 Prove POD2s onchain in Ethereum.
 
 ## Run tests
-- FFI test, run: `cd ffi && cargo test --release -- --nocapture`
+- FFI test, run: `cargo test test_groth_full_flow --release -- --nocapture`
 - CLI test, run: `bash test-cli.sh`
   - alternatively:
     1. generate the pod proof: `cargo test --release test_pod_flow -- --nocapture`
@@ -12,9 +12,11 @@ Prove POD2s onchain in Ethereum.
         `outputs/Verifier.sol`, ready to be deployed
 
 
-For an example on how to use the rust lib, check the test [`test_pod_flow`](https://github.com/0xPARC/pod2-onchain/blob/main/src/lib.rs)
+## Usage
+For an example on how to use the rust lib, check the test [`test_groth_full_flow`](https://github.com/0xPARC/pod2-onchain/blob/main/src/lib.rs)
 
 ![](pod2-onchain-diagram.png)
+
 
 
 ## Benchmarks

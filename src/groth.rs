@@ -1,28 +1,18 @@
-#![allow(non_upper_case_globals)]
-#![allow(non_camel_case_types)]
-#![allow(non_snake_case)]
+//! This file offers methods for the Groth16 proofs which internally call the Go
+//! methods through FFI.
+
+use std::ffi::{c_char, c_int, c_uchar, CStr, CString};
+
+use anyhow::{anyhow, Result};
+use plonky2::plonk::proof::ProofWithPublicInputs;
+use pod2::backends::plonky2::basetypes::{D, F};
+
+use crate::poseidon_bn128::config::PoseidonBN128GoldilocksConfig;
 
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
-use std::ffi::{c_char, c_int, c_uchar, c_uint, CStr, CString};
-use std::ptr;
-
-use anyhow::{anyhow, Result};
-use plonky2::{
-    plonk::config::GenericConfig,
-    plonk::{
-        circuit_builder::CircuitBuilder,
-        circuit_data::{
-            CircuitConfig, CircuitData, CommonCircuitData, VerifierCircuitData,
-            VerifierOnlyCircuitData,
-        },
-        proof::ProofWithPublicInputs,
-    },
-};
-use pod2::backends::plonky2::basetypes::{Proof, C, D, F};
-
-use pod2_onchain::poseidon_bn128::config::PoseidonBN128GoldilocksConfig;
-
+/// computes the Groth16 trusted setup. Method only for tests, do not use in
+/// production.
 pub fn trusted_setup(input_path: &str, output_path: &str) -> String {
     let input_path = CString::new(input_path).unwrap();
     let output_path = CString::new(output_path).unwrap();
@@ -66,6 +56,7 @@ pub fn check_init() -> String {
     }
 }
 
+/// compute a Groth16 proof out of the given Plonky2's ProofWithPublicInputs
 pub fn groth16_prove(
     proof_with_pis: ProofWithPublicInputs<F, PoseidonBN128GoldilocksConfig, D>,
 ) -> Result<(Vec<u8>, Vec<u8>)> {
@@ -102,6 +93,7 @@ pub fn groth16_prove(
     Ok((proof_bytes, pub_inp_bytes))
 }
 
+/// verify the given Groth16 proof with the given public inputs
 pub fn groth16_verify(proof: Vec<u8>, public_inputs: Vec<u8>) -> Result<()> {
     let res_string = unsafe {
         let ptr = Groth16Verify(
@@ -120,45 +112,4 @@ pub fn groth16_verify(proof: Vec<u8>, public_inputs: Vec<u8>) -> Result<()> {
         return Err(anyhow!(res_string));
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::path::Path;
-
-    #[test]
-    fn test_ffi_bindings() -> Result<()> {
-        let input_path = "../tmp/plonky2-proof";
-        let output_path = "../tmp/groth-artifacts";
-
-        // if plonky2 groth16-friendly proof does not exist yet, generate it
-        if !Path::new(input_path).is_dir() {
-            println!("generating plonky2 groth16-friendly proof");
-            pod2_onchain::sample_plonky2_g16_friendly_proof(input_path)?;
-        }
-
-        // if trusted setup does not exist yet, generate it
-        if !Path::new(output_path).is_dir() {
-            println!("generating groth16's trusted setup");
-            let result = trusted_setup(input_path, output_path);
-            println!("trusted_setup result: {}", result);
-        }
-
-        let result = init(input_path, output_path);
-        println!("init result: {}", result);
-
-        let result = check_init();
-        println!("check_init result: {}", result);
-
-        let pod = pod2_onchain::sample_main_pod()?;
-        let (_, _, proof_with_pis) = pod2_onchain::prove_pod(pod)?;
-
-        println!("calling groth16_prove");
-        let (g16_proof, g16_pub_inp) = groth16_prove(proof_with_pis)?;
-
-        groth16_verify(g16_proof, g16_pub_inp)?;
-
-        Ok(())
-    }
 }
