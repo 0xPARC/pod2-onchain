@@ -7,7 +7,7 @@ pub mod pod;
 pub mod poseidon_bn128;
 
 // expose directly the main methods
-pub use groth::{groth16_prove, groth16_verify, init, trusted_setup};
+pub use groth::{groth16_prove, groth16_verify, init, load_vk, trusted_setup};
 pub use pod::{encode_public_inputs_gnark, prepare_public_inputs, prove_pod};
 
 #[cfg(test)]
