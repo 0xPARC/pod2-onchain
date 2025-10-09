@@ -198,6 +198,29 @@ pub fn prepare_public_inputs(
     Ok(r)
 }
 
+/// gets as input the public inputs vector (output from
+/// `prepare_public_inputs`), and encodes it as a byte-array compatible with
+/// Gnark encoding
+pub fn encode_public_inputs_gnark(pub_inp: Vec<F>) -> Vec<u8> {
+    // encode it as big-endian bytes compatible with Gnark:
+    //   0..4: num public inputs
+    //   4..8: num secret inputs (0 in the case of only public inputs))
+    //   8..12: num of elements in the vector (which is the num of public inputs)
+    //   12..n: public inputs encoded as big-endian bytes
+    let mut pub_inp_bytes = Vec::new();
+    let n = pub_inp.len() as u32;
+    pub_inp_bytes.extend_from_slice(&n.to_be_bytes());
+    pub_inp_bytes.extend_from_slice(&0u32.to_be_bytes());
+    pub_inp_bytes.extend_from_slice(&n.to_be_bytes());
+    for e in pub_inp {
+        let b = e.0.to_be_bytes();
+        let padding = vec![0u8; 24];
+        let b_256 = [padding, b.to_vec()].concat();
+        pub_inp_bytes.extend_from_slice(&b_256);
+    }
+    pub_inp_bytes
+}
+
 pub fn wrap_bn128(
     verifier_only_data: VerifierOnlyCircuitData<C, D>,
     common_circuit_data: CommonCircuitData<F, D>,
