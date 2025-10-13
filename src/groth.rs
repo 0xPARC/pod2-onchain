@@ -46,6 +46,16 @@ pub fn init(input_path: &str, output_path: &str) -> String {
         s
     }
 }
+pub fn load_vk(path: &str) -> String {
+    let path = CString::new(path).unwrap();
+
+    unsafe {
+        let cstr = CStr::from_ptr(LoadVk(path.as_ptr() as *mut c_char));
+        let s = String::from_utf8_lossy(cstr.to_bytes()).to_string();
+        GoFree(cstr.as_ptr() as *mut c_uchar);
+        s
+    }
+}
 
 pub fn check_init() -> String {
     unsafe {

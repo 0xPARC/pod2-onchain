@@ -7,8 +7,8 @@ pub mod pod;
 pub mod poseidon_bn128;
 
 // expose directly the main methods
-pub use groth::{groth16_prove, groth16_verify, init, trusted_setup};
-pub use pod::prove_pod;
+pub use groth::{groth16_prove, groth16_verify, init, load_vk, trusted_setup};
+pub use pod::{encode_public_inputs_gnark, prepare_public_inputs, prove_pod};
 
 #[cfg(test)]
 mod tests {
@@ -48,10 +48,16 @@ mod tests {
 
         println!("calling groth16_prove");
         let start = Instant::now();
-        let (g16_proof, g16_pub_inp) = groth16_prove(proof_with_pis)?;
+        let (g16_proof, g16_pub_inp) = groth16_prove(proof_with_pis.clone())?;
         println!("[TIME] groth16_prove took: {:?}", start.elapsed());
 
-        groth16_verify(g16_proof, g16_pub_inp)?;
+        groth16_verify(g16_proof, g16_pub_inp.clone())?;
+
+        // check that the `encode_public_inputs_gnark` method works as expected
+        assert_eq!(
+            g16_pub_inp,
+            encode_public_inputs_gnark(proof_with_pis.public_inputs)
+        );
 
         Ok(())
     }

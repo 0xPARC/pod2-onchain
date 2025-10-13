@@ -95,6 +95,22 @@ func Init(inputsPathChar *C.char, outputsPathChar *C.char) *C.char {
 	return C.CString("r1cs, pk, vk loaded")
 }
 
+//export LoadVk
+func LoadVk(PathChar *C.char) *C.char {
+	path := C.GoString(PathChar)
+
+	fmt.Println("(go) start to load vk")
+	start := time.Now()
+	vk = groth16.NewVerifyingKey(bn254.ID)
+	vkBuf, err := os.ReadFile(filepath.Join(path, "verifying.key"))
+	checkErr(err)
+	_, err = vk.ReadFrom(bytes.NewBuffer(vkBuf))
+	checkErr(err)
+	fmt.Println("(go) [DBG] loading vk took:", time.Since(start).Milliseconds())
+
+	return C.CString("vk loaded")
+}
+
 //export CheckInit
 func CheckInit() *C.char {
 	// TODO (not only in this method) before doing any logic, ensure that

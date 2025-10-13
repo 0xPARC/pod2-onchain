@@ -9,7 +9,10 @@ use std::time::Instant;
 use sha2::{Digest, Sha256};
 
 use plonky2::{
-    field::types::{Field, PrimeField64},
+    field::{
+        extension::FieldExtension,
+        types::{Field, PrimeField64},
+    },
     hash::hash_types::{HashOut, HashOutTarget},
     iop::{
         ext_target::{unflatten_target, ExtensionTarget},
@@ -29,12 +32,14 @@ use plonky2::{
 
 use pod2::{
     backends::plonky2::{
-        basetypes::{Proof, C, D, DEFAULT_VD_SET, F},
+        basetypes::{Proof, C, D, DEFAULT_VD_SET, F, FE},
         circuits::{
             common::{CircuitBuilderPod, Flattenable, StatementTarget},
             mainpod::calculate_statements_hash_circuit,
         },
-        mainpod::{pad_statement, statement::Statement as bStatement, Prover},
+        mainpod::{
+            calculate_statements_hash, pad_statement, statement::Statement as bStatement, Prover,
+        },
     },
     frontend::{MainPodBuilder, Operation},
     middleware::{containers::Set, Params, Statement, ToFields},
@@ -140,6 +145,85 @@ fn bytes_to_hash(b: Vec<u8>) -> pod2::middleware::Hash {
     pod2::middleware::Hash(v)
 }
 
+pub fn prepare_public_inputs(
+    pod_params: &Params,
+    vdset_root: pod2::middleware::Hash,
+    pub_statements: &[Statement],
+) -> Result<Vec<F>> {
+    // public inputs order:
+    //     0..4: poseidon hash
+    //     4..8: vdset.root
+    //     8..12: sha256 hash
+    //     12..14: gamma
+
+    // convert Statements to backend Statements
+    let pub_st: Vec<bStatement> = pub_statements
+        .iter()
+        .map(|st| bStatement::from(st.clone()))
+        .collect();
+
+    // compute Poseidon & Sha256 hashes out of the statements
+    let statements_poseidon = calculate_statements_hash(&pub_st, &pod_params);
+    let statements_poseidon_firsthalf: [F; 2] = statements_poseidon.0[0..2].try_into().unwrap();
+    let statements_sha256 = calculate_statements_hash_sha256(&pub_st, &pod_params);
+    let statements_sha256_firsthalf: [F; 2] = statements_sha256.0[0..2].try_into().unwrap();
+
+    // get sigma
+    let alpha: FE = FE::from_basefield_array(statements_sha256_firsthalf);
+    let beta: FE = FE::from_basefield_array(statements_poseidon_firsthalf);
+    let sigma = alpha + beta;
+
+    // prepare the statements into the shape of Goldilocks extension elements
+    let mut st_field_elems: Vec<F> = pub_st
+        .iter()
+        .flat_map(|statement| statement.to_fields(pod_params))
+        .collect::<Vec<_>>();
+    // extend st_field_elems to have length multiple of D
+    let padding_to_multiple_of_D = D - (st_field_elems.len() % D);
+    st_field_elems.resize(st_field_elems.len() + padding_to_multiple_of_D, F::ZERO);
+
+    let st_extension: Vec<FE> = plonky2::field::extension::unflatten::<F, D>(&st_field_elems);
+    // compute gamma = UHF(sigma, statements) = \sum st_i * sigma^i
+    let mut gamma: FE = st_extension[st_extension.len() - 1];
+    for st_e in st_extension.iter().rev().skip(1) {
+        gamma = gamma * sigma + *st_e;
+    }
+
+    let r: Vec<F> = vec![
+        statements_poseidon.0.to_vec(),
+        vdset_root.0.to_vec(),
+        statements_sha256.0.to_vec(),
+        gamma.0.to_vec(),
+    ]
+    .concat();
+    debug_assert_eq!(r.len(), 14);
+
+    Ok(r)
+}
+
+/// gets as input the public inputs vector (output from
+/// `prepare_public_inputs`), and encodes it as a byte-array compatible with
+/// Gnark encoding
+pub fn encode_public_inputs_gnark(pub_inp: Vec<F>) -> Vec<u8> {
+    // encode it as big-endian bytes compatible with Gnark:
+    //   0..4: num public inputs
+    //   4..8: num secret inputs (0 in the case of only public inputs))
+    //   8..12: num of elements in the vector (which is the num of public inputs)
+    //   12..n: public inputs encoded as big-endian bytes
+    let mut pub_inp_bytes = Vec::new();
+    let n = pub_inp.len() as u32;
+    pub_inp_bytes.extend_from_slice(&n.to_be_bytes());
+    pub_inp_bytes.extend_from_slice(&0u32.to_be_bytes());
+    pub_inp_bytes.extend_from_slice(&n.to_be_bytes());
+    for e in pub_inp {
+        let b = e.0.to_be_bytes();
+        let padding = vec![0u8; 24];
+        let b_256 = [padding, b.to_vec()].concat();
+        pub_inp_bytes.extend_from_slice(&b_256);
+    }
+    pub_inp_bytes
+}
+
 pub fn wrap_bn128(
     verifier_only_data: VerifierOnlyCircuitData<C, D>,
     common_circuit_data: CommonCircuitData<F, D>,
@@ -197,15 +281,14 @@ pub fn wrap_bn128(
     let sigma_ext_target: ExtensionTarget<D> =
         builder.add_extension(alpha_ext_target, beta_ext_target);
 
-    // NOTE: the statement.flatten() is already computed in the pod2's
-    // `calculate_statements_hash_circuit` gadget. Maybe we can modify pod2's
-    // lib to return it avoiding recomputing it here.
-    let statements_rev_flattened: Vec<Target> = pub_statements_target
+    // NOTE: the statement.flatten() is already computed (although in reverse
+    // order) in the pod2's `calculate_statements_hash_circuit` gadget. Maybe we
+    // can modify pod2's lib to return it avoiding recomputing it here.
+    let statements_flattened: Vec<Target> = pub_statements_target
         .iter()
-        .rev()
         .flat_map(|s| s.flatten())
         .collect();
-    let statements_extension = unflatten_target::<D>(&statements_rev_flattened);
+    let statements_extension = unflatten_target::<D>(&statements_flattened);
     // compute gamma = UHF(sigma, statements) = \sum st_i * sigma^i
     let mut gamma_ext_target: ExtensionTarget<D> =
         statements_extension[statements_extension.len() - 1];
@@ -326,12 +409,18 @@ pub fn sample_plonky2_g16_friendly_proof(path: &str) -> Result<()> {
 
     // step 2) generate new plonky2 proof from POD's proof
     let start = Instant::now();
-    let (verifier_data, common_circuit_data, proof_with_pis) = prove_pod(pod)?;
+    let (verifier_data, common_circuit_data, proof_with_pis) = prove_pod(pod.clone())?;
     println!(
         "[TIME] plonky2 proof (groth16-friendly) took: {:?}",
         start.elapsed()
     );
     assert_eq!(proof_with_pis.public_inputs.len(), 14); // poseidon + vdset_root + sha256 + gamma
+
+    // check that the `prepare_public_inputs` method works as expected
+    assert_eq!(
+        proof_with_pis.public_inputs,
+        prepare_public_inputs(&pod.params, pod.pod.vd_set().root(), &pod.public_statements)?
+    );
 
     // step 3) store the files
     store_files(
