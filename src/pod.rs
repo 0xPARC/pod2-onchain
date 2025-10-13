@@ -174,11 +174,14 @@ pub fn prepare_public_inputs(
     let sigma = alpha + beta;
 
     // prepare the statements into the shape of Goldilocks extension elements
-    let st_field_elems: Vec<F> = pub_st
+    let mut st_field_elems: Vec<F> = pub_st
         .iter()
-        .rev()
         .flat_map(|statement| statement.to_fields(pod_params))
         .collect::<Vec<_>>();
+    // extend st_field_elems to have length multiple of D
+    let padding_to_multiple_of_D = D - (st_field_elems.len() % D);
+    st_field_elems.resize(st_field_elems.len() + padding_to_multiple_of_D, F::ZERO);
+
     let st_extension: Vec<FE> = plonky2::field::extension::unflatten::<F, D>(&st_field_elems);
     // compute gamma = UHF(sigma, statements) = \sum st_i * sigma^i
     let mut gamma: FE = st_extension[st_extension.len() - 1];
@@ -278,15 +281,14 @@ pub fn wrap_bn128(
     let sigma_ext_target: ExtensionTarget<D> =
         builder.add_extension(alpha_ext_target, beta_ext_target);
 
-    // NOTE: the statement.flatten() is already computed in the pod2's
-    // `calculate_statements_hash_circuit` gadget. Maybe we can modify pod2's
-    // lib to return it avoiding recomputing it here.
-    let statements_rev_flattened: Vec<Target> = pub_statements_target
+    // NOTE: the statement.flatten() is already computed (although in reverse
+    // order) in the pod2's `calculate_statements_hash_circuit` gadget. Maybe we
+    // can modify pod2's lib to return it avoiding recomputing it here.
+    let statements_flattened: Vec<Target> = pub_statements_target
         .iter()
-        .rev()
         .flat_map(|s| s.flatten())
         .collect();
-    let statements_extension = unflatten_target::<D>(&statements_rev_flattened);
+    let statements_extension = unflatten_target::<D>(&statements_flattened);
     // compute gamma = UHF(sigma, statements) = \sum st_i * sigma^i
     let mut gamma_ext_target: ExtensionTarget<D> =
         statements_extension[statements_extension.len() - 1];
