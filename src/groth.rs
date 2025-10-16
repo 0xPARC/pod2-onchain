@@ -2,6 +2,7 @@
 //! methods through FFI.
 
 use std::ffi::{c_char, c_int, c_uchar, CStr, CString};
+use std::path::Path;
 
 use anyhow::{anyhow, Result};
 use plonky2::plonk::proof::ProofWithPublicInputs;
@@ -32,7 +33,20 @@ pub fn trusted_setup(input_path: &str, output_path: &str) -> String {
 ///   - Groth16's R1CS, ProvingKey and VerifierKey
 ///   - Plonky2's VerifierOnlyCircuitData, CommonCircuitData
 /// so that they can be used by later calls to `groth16_prove` and `groth16_verify`.
-pub fn init(input_path: &str, output_path: &str) -> String {
+pub fn init(input_path: &str, output_path: &str) -> Result<String> {
+    // check that the trusted setup & r1cs files exist
+    let pk_path = Path::new(&output_path).join("proving.key");
+    let vk_path = Path::new(&output_path).join("verifying.key");
+    let r1cs_path = Path::new(&output_path).join("r1cs");
+    if !pk_path.exists() || !vk_path.exists() || !r1cs_path.exists() {
+        return Err(anyhow!(
+            "not found: pk, vk, r1cs. Path:\n  pk: {:?}\n  vk: {:?},\n  r1cs: {:?}",
+            pk_path,
+            vk_path,
+            r1cs_path
+        ));
+    }
+
     let input_path = CString::new(input_path).unwrap();
     let output_path = CString::new(output_path).unwrap();
 
@@ -43,17 +57,24 @@ pub fn init(input_path: &str, output_path: &str) -> String {
         ));
         let s = String::from_utf8_lossy(cstr.to_bytes()).to_string();
         GoFree(cstr.as_ptr() as *mut c_uchar);
-        s
+        Ok(s)
     }
 }
-pub fn load_vk(path: &str) -> String {
+/// Loads into memory the
+pub fn load_vk(path: &str) -> Result<String> {
+    // check that the trusted setup & r1cs files exist
+    let vk_path = Path::new(&path).join("verifying.key");
+    if !vk_path.exists() {
+        return Err(anyhow!("not found: vk. Path: vk: {:?}", vk_path,));
+    }
+
     let path = CString::new(path).unwrap();
 
     unsafe {
         let cstr = CStr::from_ptr(LoadVk(path.as_ptr() as *mut c_char));
         let s = String::from_utf8_lossy(cstr.to_bytes()).to_string();
         GoFree(cstr.as_ptr() as *mut c_uchar);
-        s
+        Ok(s)
     }
 }
 

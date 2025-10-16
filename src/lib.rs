@@ -37,7 +37,7 @@ mod tests {
             println!("trusted_setup result: {}", result);
         }
 
-        let result = init(input_path, output_path);
+        let result = init(input_path, output_path)?;
         println!("init result: {}", result);
 
         let result = groth::check_init();
