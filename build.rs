@@ -38,7 +38,7 @@ fn main() {
             .expect("Couldn't write bindings!");
     }
 
-    println!("cargo:rerun-if-changed=go/{:?}", go_filepath.to_str());
+    println!("cargo:rerun-if-changed={}", go_filepath.to_str().unwrap());
     println!(
         "cargo:rustc-link-search=native={}",
         out_path.to_str().unwrap()
