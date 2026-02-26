@@ -2,7 +2,7 @@
 Prove POD2s onchain in Ethereum.
 
 ## Run tests
-- FFI test, run: `cargo test test_groth_full_flow --release -- --nocapture`
+- FFI test, run: `cargo test --release test_groth_full_flow -- --nocapture`
 - CLI test, run: `bash test-cli.sh`
   - alternatively:
     1. generate the pod proof: `cargo test --release test_pod_flow -- --nocapture`

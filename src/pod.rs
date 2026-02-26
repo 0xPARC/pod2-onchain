@@ -68,7 +68,7 @@ pub fn prove_pod(
     let pod_proof: Proof = pod.pod.proof();
     let public_inputs = pod
         .statements_hash()
-        .to_fields(&pod.params)
+        .to_fields()
         .iter()
         .chain(pod.pod.vd_set().root().0.iter())
         .cloned()
@@ -104,20 +104,19 @@ pub fn calculate_statements_hash_sha256(
     statements: &[bStatement],
     params: &Params,
 ) -> pod2::middleware::Hash {
-    assert!(statements.len() <= params.num_public_statements_hash);
-    assert!(params.max_public_statements <= params.num_public_statements_hash);
+    assert!(statements.len() <= params.max_public_statements);
 
     let mut none_st: bStatement = pod2::middleware::Statement::None.into();
-    pad_statement(params, &mut none_st);
+    pad_statement(&mut none_st);
     let statements_back_padded = statements
         .iter()
         .chain(std::iter::repeat(&none_st))
-        .take(params.num_public_statements_hash)
+        .take(params.max_public_statements)
         .collect_vec();
     let field_elems: Vec<F> = statements_back_padded
         .iter()
         .rev()
-        .flat_map(|statement| statement.to_fields(params))
+        .flat_map(|statement| statement.to_fields())
         .collect::<Vec<_>>();
 
     let b: Vec<u8> = field_elems
@@ -163,7 +162,7 @@ pub fn prepare_public_inputs(
         .collect();
 
     // compute Poseidon & Sha256 hashes out of the statements
-    let statements_poseidon = calculate_statements_hash(&pub_st, &pod_params);
+    let statements_poseidon = calculate_statements_hash(&pub_st);
     let statements_poseidon_firsthalf: [F; 2] = statements_poseidon.0[0..2].try_into().unwrap();
     let statements_sha256 = calculate_statements_hash_sha256(&pub_st, &pod_params);
     let statements_sha256_firsthalf: [F; 2] = statements_sha256.0[0..2].try_into().unwrap();
@@ -176,7 +175,7 @@ pub fn prepare_public_inputs(
     // prepare the statements into the shape of Goldilocks extension elements
     let mut st_field_elems: Vec<F> = pub_st
         .iter()
-        .flat_map(|statement| statement.to_fields(pod_params))
+        .flat_map(|statement| statement.to_fields())
         .collect::<Vec<_>>();
     // extend st_field_elems to have length multiple of D
     let padding_to_multiple_of_D = D - (st_field_elems.len() % D);
@@ -257,11 +256,11 @@ pub fn wrap_bn128(
     );
     // 1.b
     let pub_statements_target: Vec<StatementTarget> = (0..pub_statements.len())
-        .map(|_| builder.add_virtual_statement(pod_params))
+        .map(|_| builder.add_virtual_statement(false))
         .collect();
     // compute beta = poseidon(statements)
     let statements_poseidon_target =
-        calculate_statements_hash_circuit(pod_params, &mut builder, &pub_statements_target);
+        calculate_statements_hash_circuit(&mut builder, &pub_statements_target);
 
     // ensure that `statements_poseidon_target` matches the given
     // `proof_with_pis_target.public_inputs[0..4]`, which contains the poseidon
@@ -319,7 +318,7 @@ pub fn wrap_bn128(
     pw.set_proof_with_pis_target(&proof_with_pis_target, &proof_with_public_inputs)?;
     // set the targets for the pub_statements_target
     for (i, st) in pub_statements.iter().enumerate() {
-        pub_statements_target[i].set_targets(&mut pw, pod_params, &bStatement::from(st.clone()))?;
+        pub_statements_target[i].set_targets(&mut pw, &bStatement::from(st.clone()))?;
     }
     // hash pub_statements using sha256
     let pub_st: Vec<bStatement> = pub_statements
@@ -388,7 +387,7 @@ pub fn sample_main_pod() -> Result<pod2::frontend::MainPod> {
         .into_iter()
         .map(|n| n.into())
         .collect();
-    let set = Set::new(10, set_entries)?;
+    let set = Set::new(set_entries);
 
     builder.pub_op(Operation::set_contains(set, "3"))?;
 
